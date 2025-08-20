@@ -15,7 +15,6 @@ tasks=(
     # bimanual_take_tray_out_of_oven
 )
 
-
 # Testing arguments
 # checkpoint=peract2.pth
 checkpoint=3dfa_peract2.pth
@@ -25,7 +24,7 @@ checkpoint_alias=peract2_model  # or something ugly
 max_tries=2
 max_steps=25
 headless=false
-collision_checking=false
+collision_checking=true
 seed=0
 
 # Dataset arguments
