@@ -1,6 +1,6 @@
 exp=peract2
 tasks=(
-    bimanual_push_box
+    # bimanual_push_box
     # bimanual_lift_ball
     # bimanual_dual_push_buttons
     # bimanual_pick_plate
@@ -10,7 +10,7 @@ tasks=(
     # bimanual_pick_laptop
     # bimanual_straighten_rope
     # bimanual_sweep_to_dustpan
-    # bimanual_lift_tray
+    bimanual_lift_tray
     # bimanual_handover_item_easy
     # bimanual_take_tray_out_of_oven
 )
@@ -55,7 +55,7 @@ denoise_model=rectified_flow
 
 num_ckpts=${#tasks[@]}
 for ((i=0; i<$num_ckpts; i++)); do
-    xvfb-run -a python online_evaluation_rlbench/evaluate_policy.py \
+    python online_evaluation_rlbench/evaluate_policy.py \
         --checkpoint $checkpoint \
         --task ${tasks[$i]} \
         --max_tries $max_tries \

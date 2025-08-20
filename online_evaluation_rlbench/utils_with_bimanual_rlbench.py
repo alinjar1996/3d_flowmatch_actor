@@ -56,7 +56,8 @@ class Mover:
             # Peract2 takes (right, left) action, but we predict (left, right)
             action_collision = action_collision[::-1]
             action_collision = action_collision.ravel()
-            obs, reward, terminate = self._task.step(action_collision, ret_obs=True)
+            # obs, reward, terminate = self._task.step(action_collision, ret_obs=True)
+            obs, reward, terminate = self._task.step(action_collision)
 
             # Check if we reached the desired pose (planner may be inaccurate)
             l_pos = obs.left.gripper_pose[:3]
