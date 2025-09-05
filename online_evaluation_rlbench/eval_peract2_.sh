@@ -1,7 +1,7 @@
 exp=peract2
 tasks=(
     # bimanual_push_box
-    # bimanual_lift_ball
+    bimanual_lift_ball
     # bimanual_dual_push_buttons
     # bimanual_pick_plate
     # bimanual_put_item_in_drawer
@@ -10,7 +10,7 @@ tasks=(
     # bimanual_pick_laptop
     # bimanual_straighten_rope
     # bimanual_sweep_to_dustpan
-    bimanual_lift_tray
+    # bimanual_lift_tray
     # bimanual_handover_item_easy
     # bimanual_take_tray_out_of_oven
 )
@@ -22,7 +22,7 @@ checkpoint_alias=peract2_model  # or something ugly
 # like: denoise3d-Peract2_3dfront_3dwrist-C120-B64-lr1e-4-constant-H3-rectified_flow
 
 max_tries=2
-max_steps=25
+max_steps=150
 headless=false
 collision_checking=true
 seed=0
