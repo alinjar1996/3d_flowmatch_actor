@@ -15,6 +15,7 @@ tasks=(
     # bimanual_take_tray_out_of_oven
 )
 
+
 # Testing arguments
 # checkpoint=peract2.pth
 checkpoint=3dfa_peract2.pth
