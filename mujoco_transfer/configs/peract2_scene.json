@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "robot_bases": {
+    "left": [
+      -0.24256718182914433,
+      0.022205889837357225,
+      0.7502147598271556,
+      8.605420172371273e-07,
+      -5.9604641886554265e-08,
+      0.0436202341038497,
+      0.999048184611724
+    ],
+    "right": [
+      0.7920418984295635,
+      -0.24360928481809477,
+      0.7502147598269946,
+      -1.7997808754435821e-07,
+      -6.85453414916676e-07,
+      0.9999999999995388,
+      -6.482005119320742e-07
+    ]
+  },
+  "joint1_world_poses_xyzw": {
+    "left": [
+      -0.24256719648838043,
+      0.02220531553030014,
+      1.0832147598266602,
+      8.605420589447021e-07,
+      -5.960464477539063e-08,
+      0.043620236217975616,
+      0.9990482330322266
+    ],
+    "right": [
+      0.7920417785644531,
+      -0.2436097413301468,
+      1.0832147598266602,
+      -1.7997808754444122e-07,
+      -6.854534149169922e-07,
+      1.0,
+      -6.48200511932373e-07
+    ]
+  },
+  "base_frame_definition": "Panda link0 datum: source joint1 fixed world frame translated by (0,0,-0.333) metres in its local axes. This is not the shared DualPanda object origin.",
+  "joint1_height_above_link0_m": 0.333,
+  "ball_radius_m": 0.15000000596046448,
+  "ball_mass_kg": 1.0,
+  "ball_authored_pose_xyzw": [
+    0.22499990463256836,
+    -0.05000000074505806,
+    0.8999999761581421,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "ball_color_rgb": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "table_top_z_m": 0.7500219718921683,
+  "table_center_xy_m": [
+    0.30000001192092896,
+    0.0
+  ],
+  "table_half_size_xy_m": [
+    0.8000110442560744,
+    0.5500005478220928
+  ],
+  "success_condition": {
+    "kind": "world_height",
+    "minimum_height_m": 0.95
+  },
+  "task_descendants": [
+    "ball",
+    "waypoint0",
+    "waypoint1",
+    "waypoint2",
+    "waypoint6",
+    "waypoint3",
+    "waypoint7",
+    "waypoint4",
+    "waypoint5"
+  ],
+  "source": {
+    "repository": "https://github.com/markusgrotz/RLBench",
+    "commit": "8af748c51287989294e00c9c670e3330a0e35ed5",
+    "scene": {
+      "path": "rlbench/task_design_bimanual.ttt",
+      "sha256": "df2e87617b1078b7f6fe114bbc341df3263effe62a9c3ffdf3c64b511f46615f"
+    },
+    "task_model": {
+      "path": "rlbench/task_ttms/bimanual_lift_ball.ttm",
+      "sha256": "d2a99507006c2c2ff51c6bf9bf3672771b143456569c06ac723e387a829a171c"
+    },
+    "task_code": {
+      "path": "rlbench/bimanual_tasks/bimanual_lift_ball.py",
+      "sha256": "60c65bcc28d2ae34ee1cbc16e554f2da0b37dcb004b77f452c312c71b8c69bae"
+    },
+    "extraction": "Native CoppeliaSim 4.1.0 via PyRep; no trajectory fitting used for robot bases",
+    "scope": "Source scene identity checked against released episode camera matrices and home configurations; checkpoint does not record its RLBench git commit."
+  }
+}

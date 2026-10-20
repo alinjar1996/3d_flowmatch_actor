@@ -16,20 +16,21 @@ class Encoder(nn.Module):
                  num_vis_instr_attn_layers=2,
                  fps_subsampling_factor=5,
                  finetune_backbone=False,
-                 finetune_text_encoder=False):
+                 finetune_text_encoder=False,
+                 pretrained_backbones=True):
         super().__init__()
         self.subsampling_factor = fps_subsampling_factor
         self._backbone_name = backbone
 
         # Instruction encoder
-        self.text_encoder, _dim = fetch_text_encoders(backbone)
+        self.text_encoder, _dim = fetch_text_encoders(backbone, pretrained=pretrained_backbones)
         if self.text_encoder is not None:  # is None when using a VLM
             for p in self.text_encoder.parameters():
                 p.requires_grad = finetune_text_encoder
             self.instruction_encoder = nn.Linear(_dim, embedding_dim)
 
         # Scene encoder
-        self.backbone, self.normalize = fetch_visual_encoders(backbone)
+        self.backbone, self.normalize = fetch_visual_encoders(backbone, pretrained=pretrained_backbones)
         for p in self.backbone.parameters():
             p.requires_grad = finetune_backbone
 

@@ -29,7 +29,8 @@ class DenoiseActor(BaseDenoiseActor):
                  denoise_timesteps=100,
                  denoise_model="ddpm",
                  # Training arguments
-                 lv2_batch_size=1):
+                 lv2_batch_size=1,
+                 pretrained_backbones=True):
         super().__init__(
             embedding_dim=embedding_dim,
             num_attn_heads=num_attn_heads,
@@ -52,7 +53,8 @@ class DenoiseActor(BaseDenoiseActor):
             num_vis_instr_attn_layers=num_vis_instr_attn_layers,
             fps_subsampling_factor=fps_subsampling_factor,
             finetune_backbone=finetune_backbone,
-            finetune_text_encoder=finetune_text_encoder
+            finetune_text_encoder=finetune_text_encoder,
+            pretrained_backbones=pretrained_backbones
         )
 
         # Action decoder, runs at every denoising timestep

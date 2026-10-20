@@ -1,0 +1,171 @@
+"""Render, infer, and execute the pretrained PerAct2 policy in MuJoCo."""
+
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import time
+
+import numpy as np
+import torch
+
+from .policy import CHECKPOINT_SHA256, FlowMatchPolicy, sha256
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scene", type=Path, default=Path("runtime/panda_ball_reference/scene.xml"))
+    parser.add_argument("--config", type=Path,
+                        default=Path("runtime/panda_ball_reference/reference_config.json"))
+    parser.add_argument("--reference-archive", type=Path,
+                        default=Path("runtime/peract2_test.zip"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/3dfa_peract2.pth"))
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--mode", choices=["observe", "infer", "rollout"], default="infer")
+    parser.add_argument("--steps", type=int, default=25)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--instruction")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--viewer", action="store_true")
+    parser.add_argument("--no-video", action="store_true",
+                        help="Disable MP4 recording (rollouts record by default)")
+    parser.add_argument("--video-view",
+                        choices=("all", "overview", "opposite", "side", "top", "orbit"),
+                        default="all",
+                        help="Saved camera view: all gives a synchronized 2x2 grid; "
+                             "fixed views also set the initial live-view angle")
+    parser.add_argument("--threads", type=int, default=4)
+    args = parser.parse_args()
+    if args.steps < 1:
+        parser.error("--steps must be positive")
+    os.environ.setdefault("MUJOCO_GL", "glfw" if args.viewer else "egl")
+    os.environ.setdefault("HF_HOME", str(Path("runtime/huggingface").resolve()))
+    from .environment import PandaBallEnvironment, read_config
+    from PIL import Image
+
+    torch.set_num_threads(args.threads)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    config = read_config(args.config)
+    instruction = args.instruction or config["instruction"]
+    output = args.output or Path("runtime/runs") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    output.mkdir(parents=True, exist_ok=False)
+    report = {
+        "mode": args.mode, "device": args.device, "seed": args.seed,
+        "instruction": instruction, "config": config, "steps": [],
+        "task_success_validated": False,
+        "metric": (config.get("success_condition") or config.get("success_proxy")),
+    }
+    manifest = args.scene.parent / "source.json"
+    if manifest.exists():
+        report["scene_source"] = json.loads(manifest.read_text())
+    env, viewer, video = None, None, None
+    try:
+        if "scene_settings" in config:
+            from .verify_settings import verify_settings
+            episode = int(Path(config["reference"]["member"]).parent.name.removeprefix("episode"))
+            verification = verify_settings(
+                args.scene, config, archive=args.reference_archive, episode=episode)
+            report["settings_verification"] = verification
+            if not verification["passed"]:
+                failed = [c["name"] for c in verification["checks"] if not c["passed"]]
+                raise ValueError(f"Source scene settings mismatch: {failed}")
+            print("Source scene settings verified against native scene and released demo", flush=True)
+        env = PandaBallEnvironment(args.scene, config)
+        if args.mode == "rollout" and not args.no_video:
+            from .video import RolloutVideo
+            video = RolloutVideo(env, output / "rollout.mp4", view=args.video_view)
+            video.hold("Initial observation | pretrained 3DFA", seconds=1)
+            report["video"] = str(output / "rollout.mp4")
+            report["video_view"] = args.video_view
+        if args.viewer:
+            import mujoco.viewer
+            from .video import make_camera
+            viewer = mujoco.viewer.launch_passive(env.model, env.data)
+            camera = make_camera(
+                env, args.video_view if args.video_view not in ("all", "orbit") else "overview")
+            with viewer.lock():
+                viewer.cam.type = camera.type
+                viewer.cam.lookat[:] = camera.lookat
+                viewer.cam.distance = camera.distance
+                viewer.cam.azimuth = camera.azimuth
+                viewer.cam.elevation = camera.elevation
+            viewer.sync()
+            print("Live camera: left-drag to rotate, right-drag to pan, scroll to zoom", flush=True)
+        print(f"Calibration: {config['calibration_status']}", flush=True)
+        policy = None
+        if args.mode != "observe":
+            digest = sha256(args.checkpoint)
+            report["checkpoint_sha256"] = digest
+            report["official_checkpoint"] = digest == CHECKPOINT_SHA256
+            policy = FlowMatchPolicy(args.checkpoint, args.device)
+            policy.reset(instruction)
+            bounds = policy.actor.workspace_normalizer.detach().cpu().numpy()
+            report["workspace_normalizer"] = bounds.tolist()
+            report["legacy_unused_checkpoint_keys"] = policy.actor.legacy_unused_checkpoint_keys
+            print(f"Loaded {len(policy.actor.state_dict())} tensors strictly; "
+                  f"migrated {len(policy.actor.legacy_unused_checkpoint_keys)} unused legacy tensors",
+                  flush=True)
+        for step in range(args.steps if args.mode == "rollout" else 1):
+            if viewer and not viewer.is_running():
+                report["stop_reason"] = "viewer_closed"
+                break
+            rgb, points, state = env.adapter.observe()
+            np.savez_compressed(output / f"observation_{step:03d}.npz",
+                                rgb=rgb, points=points, state=state,
+                                qpos=env.data.qpos.copy())
+            Image.fromarray(np.concatenate(list(rgb), axis=1)).save(output / f"cameras_{step:03d}.png")
+            if args.mode == "observe":
+                report["stop_reason"] = "observation_saved"
+                break
+            start = time.perf_counter()
+            action = policy.predict(rgb, points, state)
+            entry = {"step": step, "inference_seconds": time.perf_counter() - start,
+                     "action_policy_frame": action.tolist(),
+                     "state_inside_checkpoint_bounds": np.all(
+                         (state[:, :3] >= bounds[0]) & (state[:, :3] <= bounds[1]), axis=1).tolist()}
+            report["steps"].append(entry)
+            print(json.dumps(entry), flush=True)
+            if args.mode == "infer":
+                report["stop_reason"] = "inference_complete"
+                break
+            if video:
+                video.set_action(action, step)
+                video.hold(video.label, seconds=0.5)
+            def callback():
+                env.track_success()
+                if video:
+                    video.capture()
+                if viewer:
+                    viewer.sync()
+            entry["controller"] = env.controller.execute(action, callback)
+            entry["state_after_action"] = env.adapter.state().tolist()
+            entry["ball_height_m"] = float(env.data.body("ball").xpos[2])
+            entry["task_success"] = bool(env.success)
+            if env.success:
+                report["stop_reason"] = "task_success"
+                break
+            if not entry["controller"]["reached"]:
+                report["stop_reason"] = "controller_timeout"
+                break
+        report.setdefault("stop_reason", "step_limit")
+        report["task_success"] = bool(env.success)
+        if video:
+            video.hold(f"Result: {report['stop_reason']} | task success: {env.success}", seconds=2)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        if viewer:
+            viewer.close()
+        if video:
+            video.close()
+        if env:
+            env.close()
+        print(f"Run artifacts: {output}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

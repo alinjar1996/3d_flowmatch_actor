@@ -20,7 +20,8 @@ class Encoder(BaseEncoder):
                  num_vis_instr_attn_layers=2,
                  fps_subsampling_factor=5,
                  finetune_backbone=False,
-                 finetune_text_encoder=False):
+                 finetune_text_encoder=False,
+                 pretrained_backbones=True):
         super().__init__(
             backbone=backbone,
             embedding_dim=embedding_dim,
@@ -29,7 +30,8 @@ class Encoder(BaseEncoder):
             num_vis_instr_attn_layers=num_vis_instr_attn_layers,
             fps_subsampling_factor=fps_subsampling_factor,
             finetune_backbone=finetune_backbone,
-            finetune_text_encoder=finetune_text_encoder
+            finetune_text_encoder=finetune_text_encoder,
+            pretrained_backbones=pretrained_backbones
         )
 
         # Postprocess scene features

@@ -39,6 +39,11 @@ observations/
 test.py
 wandb
 test*
+!tests/
+!tests/test_mujoco_transfer.py
+!tests/test_scene_settings.py
+.venv/
+runtime/
 bdp
 debug.sh
 sbatch_script2.slurm

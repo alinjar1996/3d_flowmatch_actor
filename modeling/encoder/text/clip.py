@@ -22,11 +22,15 @@ class ClipTokenizer:
 
 class ClipTextEncoder(nn.Module):
 
-    def __init__(self):
+    def __init__(self, pretrained=True):
         super().__init__()
-        self.model = transformers.CLIPTextModel.from_pretrained(
-            "openai/clip-vit-base-patch32"
-        )
+        if pretrained:
+            self.model = transformers.CLIPTextModel.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            )
+        else:
+            # Full actor checkpoints already contain the frozen text weights.
+            self.model = transformers.CLIPTextModel(transformers.CLIPTextConfig())
 
     def forward(self, tokens):
         return self.model(tokens).last_hidden_state

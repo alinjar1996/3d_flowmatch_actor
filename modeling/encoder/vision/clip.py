@@ -20,7 +20,10 @@ class CLIPTransform(nn.Module):
         return (img - self.mean) / self.std
 
 
-def load_clip():
+def load_clip(pretrained=True):
+    if not pretrained:
+        # RN50 architecture; a strict full-checkpoint load supplies all weights.
+        return ModifiedResNetFeatures((3, 4, 6, 3), 1024, 32), CLIPTransform()
     clip_model, clip_transforms = clip.load("RN50")
     state_dict = clip_model.state_dict()
     layers = tuple([len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}")))

@@ -1,0 +1,25 @@
+{
+  "instruction": "Lift the ball",
+  "cameras": ["front", "wrist_left", "wrist_right"],
+  "arms": ["left", "right"],
+  "image_size": 256,
+  "T_policy_from_mujoco": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+  "T_site_from_policy_gripper": {
+    "left": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    "right": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+  },
+  "calibration_status": "provisional identity; verify RLBench world, TCP axes, base placement and cameras before measuring transfer success",
+  "home_joints": [0.0, -0.3, 0.0, -2.0, 0.0, 1.7, 0.8],
+  "controller": {
+    "period": 0.02,
+    "max_seconds": 4.0,
+    "position_tolerance": 0.01,
+    "rotation_tolerance": 0.10,
+    "max_linear_speed": 0.20,
+    "max_angular_speed": 1.0,
+    "max_joint_speed": 1.0,
+    "damping": 0.03,
+    "gripper_seconds": 0.4
+  },
+  "success_proxy": {"ball_rise_metres": 0.10, "hold_seconds": 0.5}
+}

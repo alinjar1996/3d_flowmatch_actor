@@ -139,6 +139,11 @@ Since there are a lot of tasks for HiveFormer, we show how to generate the raw d
 ## PerAct2 checkpoint
 You can download a trained checkpoint [here](https://huggingface.co/katefgroup/3d_flowmatch_actor/resolve/main/3dfa_peract2.pth).
 
+## MuJoCo transfer
+The [MuJoCo transfer setup](mujoco_transfer/README.md) runs this checkpoint on
+the dual-Panda ball task from `manipulator_mujoco`, including reference-frame
+calibration, RGB-D observations, Cartesian control, and recorded rollout videos.
+
 ## Training
 ```
 > bash scripts/rlbench/train_peract2.sh
