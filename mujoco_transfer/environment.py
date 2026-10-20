@@ -5,6 +5,7 @@ adapter can also wrap the same MjModel/MjData used by manipulator_mujoco.
 """
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import mujoco
@@ -205,35 +206,57 @@ class CartesianController:
 
 
 class PandaBallEnvironment:
-    def __init__(self, scene, config):
+    def __init__(self, scene, config, *, initial_state=None, reset_sampler=None):
+        if initial_state is not None and reset_sampler is not None:
+            raise ValueError("Choose a fixed initial state or a reset sampler")
         self.model = mujoco.MjModel.from_xml_path(str(Path(scene).resolve()))
         self.data = mujoco.MjData(self.model)
         self.config = config
+        self.reset_sampler = reset_sampler
+        self._fixed_initial_state = deepcopy(initial_state)
         self.adapter = ObservationAdapter(self.model, self.data, config)
         self.controller = CartesianController(self.adapter)
         self.reset()
 
     def reset(self):
+        initial = (self.reset_sampler.sample() if self.reset_sampler is not None
+                   else deepcopy(self._fixed_initial_state))
+        if initial is not None:
+            ball = pose_matrix(initial["ball_pose_xyzw"])
+            for side in self.config["arms"]:
+                joints = np.asarray(initial["joint_positions"][side], dtype=float)
+                limits = self.controller.joints[side]["limits"]
+                opening = initial["gripper_open"][side]
+                if (joints.shape != (7,) or not np.isfinite(joints).all()
+                        or np.any(joints < limits[:, 0]) or np.any(joints > limits[:, 1])):
+                    raise ValueError(f"Source {side} starting joints exceed this robot's limits")
+                if not np.isfinite(opening) or not 0 <= opening <= 1:
+                    raise ValueError(f"Invalid {side} starting gripper opening")
         mujoco.mj_resetData(self.model, self.data)
+        if initial is not None:
+            pose = matrix_pose(ball)
+            self.data.joint("ball").qpos[:] = pose[[0, 1, 2, 6, 3, 4, 5]]
         for side in self.config["arms"]:
-            home = self.config["home_joints"]
+            home = initial["joint_positions"] if initial is not None else self.config["home_joints"]
             if isinstance(home, dict):
                 home = home[side]
             for i, q in enumerate(home, 1):
                 self.data.joint(f"joint{i}_{side}").qpos[0] = q
                 self.data.actuator(f"drive_joint{i}_{side}").ctrl[0] = q
             for finger in ("left", "right"):
-                self.data.joint(f"{finger}_finger_{side}").qpos[0] = 0.04
-                self.data.actuator(f"drive_{finger}_finger_{side}").ctrl[0] = 0.04
+                opening = initial["gripper_open"][side] if initial is not None else 1.0
+                self.data.joint(f"{finger}_finger_{side}").qpos[0] = 0.04 * opening
+                self.data.actuator(f"drive_{finger}_finger_{side}").ctrl[0] = 0.04 * opening
         # Released episode starts are already settled observations. Do not
         # advance them before the first policy observation or alter their pose.
-        settle_seconds = self.config.get("reset_settle_seconds", 0.5)
+        settle_seconds = 0.0 if initial is not None else self.config.get("reset_settle_seconds", 0.5)
         for _ in range(round(settle_seconds / self.model.opt.timestep)):
             mujoco.mj_step(self.model, self.data)
         mujoco.mj_forward(self.model, self.data)
         self.initial_ball_height = float(self.data.body("ball").xpos[2])
         self.held_seconds = 0
         self.success = False
+        self.initial_state = deepcopy(initial)
 
     def track_success(self):
         # mj_step's derived xpos precedes integration, so read the free joint.

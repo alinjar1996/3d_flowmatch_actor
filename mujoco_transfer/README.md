@@ -13,14 +13,14 @@ timeouts. Base poses, ball starting pose, radius, mass, and task success
 threshold now match the source settings described below. Internal arm
 kinematics, finger collision shapes, and contact dynamics still differ.
 
-The latest recording using those settings is
-[`runtime/video-source-settings/rollout.mp4`](../runtime/video-source-settings/rollout.mp4),
-with [its report](../runtime/video-source-settings/report.json). Earlier
+The latest recording using those settings shows four synchronized angles:
+[`runtime/video-multiple-angles-framed/rollout.mp4`](../runtime/video-multiple-angles-framed/rollout.mp4),
+with [its report](../runtime/video-multiple-angles-framed/report.json). Earlier
 `video-reference*` recordings used an approximate scene and are retained only
 as diagnostics; they do not demonstrate the corrected source settings.
 The new run reached the first predicted keypose, timed out on the second, and
 did not lift the ball. The 19.72-second video records the result. Inference
-took 0.254s initially and 0.030s on the next call on an RTX 4090.
+took 0.228s initially and 0.029s on the next call on an RTX 4090.
 
 ## Run the prepared setup
 
@@ -69,6 +69,86 @@ MUJOCO_GL=glfw bash scripts/mujoco/rollout.sh --viewer --video-view side
 
 Left-drag to rotate, right-drag to pan, and scroll to zoom. The live camera is
 independent of the saved video; moving it does not change policy observations.
+
+## Randomized initial states from 3DFA
+
+The source ball task randomizes placement and yaw (within ±22.5 degrees).
+It resets both arms to their authored home configurations; it does not apply
+random initial joint offsets or move the robot bases. Small differences in
+recorded starting joints come from settling.
+
+The [3DFA evaluator](../online_evaluation_rlbench/utils_with_bimanual_rlbench.py)
+evaluates stored demonstration resets. The bridge can sample uniformly from
+the **100 released ball-lifting test starts**, copying each selected start's
+full ball pose, paired left/right joint positions, and gripper-open state:
+
+```bash
+# Fresh randomly chosen source start; record all four views.
+PYTHONPATH= bash scripts/mujoco/rollout.sh --randomize --video-view all
+
+# Repeat the same source-start selection.
+PYTHONPATH= bash scripts/mujoco/rollout.sh --randomize --reset-seed 42
+
+# Select a particular source episode (0 through 99).
+PYTHONPATH= bash scripts/mujoco/rollout.sh --episode 8
+```
+
+`--reset-seed` controls initial-state selection independently of `--seed`,
+which controls policy sampling. Omit `--reset-seed` for a fresh seed; its value
+and the selected episode are printed and saved under `initial_state` in
+`report.json`. `initial_state_verification` checks actual ball, joint, and
+servo states after reset. The archive SHA256 is checked before sampling.
+Without `--randomize` or `--episode`, the prepared calibration episode remains
+the default.
+
+This samples the released evaluation population, **not new continuous
+RLBench placements**. The source continuous generator uses a yaw-dependent
+task bounding box plus collision and waypoint rejection. The observed X/Y
+range alone does not describe that distribution. In the released starts,
+ball X spans 0.078683–0.385912 m, Y spans −0.139528–0.138389 m, Z is about
+0.900000 m, and yaw spans −22.036–22.199 degrees. Maximum joint variation
+across those starts is only 0.000408 rad on the left and 0.000564 rad on the
+right. The bridge adds no extra posture noise.
+
+For a persistent simulator, pass a sampler to the environment; each `reset()`
+draws another complete source start:
+
+```python
+from mujoco_transfer.initial_states import SourceEpisodeSampler
+from mujoco_transfer.environment import PandaBallEnvironment, read_config
+
+sampler = SourceEpisodeSampler("runtime/peract2_test.zip", seed=42)
+env = PandaBallEnvironment(
+    "runtime/panda_ball_reference/scene.xml",
+    read_config("runtime/panda_ball_reference/reference_config.json"),
+    reset_sampler=sampler,
+)
+# Before a new episode:
+env.reset()
+policy.reset("Lift the ball")  # Clear policy observation history as well.
+```
+
+Static scene geometry, bases, camera mounts, TCP calibration, and task goal are
+shared across these resets. A sampled start is applied to the simulation state;
+it does not rewrite the prepared scene or refit the calibration.
+
+Verified CUDA examples:
+
+| Reset seed | Source episode | Initial ball XYZ (m) | Multi-angle recording |
+|---|---:|---|---|
+| 42 | 8 | `[0.208604, -0.073261, 0.899998]` | [Video](../runtime/video-randomized-seed42/rollout.mp4) |
+| 7 | 94 | `[0.185590, 0.071766, 0.899997]` | [Video](../runtime/video-randomized-seed7/rollout.mp4) |
+
+Both pass reset verification and both fail to lift. Episode 94 times out on
+the first predicted keypose; episode 8 reaches four keyposes but pushes the
+ball off the table. The branch's collision masks disable ball–floor contacts,
+so that run's ball continues falling below the scene. These videos verify randomized starts and
+record current transfer failures; they are not successful task demonstrations.
+
+Source reset behavior:
+[task yaw bounds](https://github.com/markusgrotz/RLBench/blob/8af748c51287989294e00c9c670e3330a0e35ed5/rlbench/bimanual_tasks/bimanual_lift_ball.py),
+[fixed home reset and placement](https://github.com/markusgrotz/RLBench/blob/8af748c51287989294e00c9c670e3330a0e35ed5/rlbench/backend/scene.py),
+and [placement sampling](https://github.com/markusgrotz/RLBench/blob/8af748c51287989294e00c9c670e3330a0e35ed5/rlbench/backend/spawn_boundary.py).
 
 For inference without executing a predicted action:
 
@@ -305,7 +385,8 @@ demonstration-training dataset.
 PYTHONPATH= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 HF_HOME="$PWD/runtime/huggingface" MUJOCO_GL=egl \
 TEST_RENDER=1 TEST_CHECKPOINT=1 OMP_NUM_THREADS=4 \
-.venv/bin/python -m pytest -q tests/test_mujoco_transfer.py tests/test_scene_settings.py
+.venv/bin/python -m pytest -q tests/test_mujoco_transfer.py tests/test_scene_settings.py \
+  tests/test_initial_states.py tests/test_randomized_reset.py
 ```
 
 The [settings report](../runtime/panda_ball_reference/settings_verification.json)
@@ -319,8 +400,9 @@ Other checks cover camera projection, nontrivial world/TCP round trips, arm orde
 history/reset semantics, strict checkpoint parity, physical Cartesian motion,
 gripper polarity, and unreachable-target reporting. Clearing `PYTHONPATH` and
 disabling pytest plugin autoload prevent an already-sourced ROS installation
-from injecting unrelated test plugins. All 18 tests passed locally, including
-the actual renderer, checkpoint, and generated-scene integration checks.
+from injecting unrelated test plugins. All 43 tests passed locally, including
+the actual renderer, checkpoint, generated-scene integration, paired source
+reset selection, RNG isolation, reset verification, and state restoration checks.
 
 Sources: [checkpoint and test metadata](https://huggingface.co/katefgroup/3d_flowmatch_actor/tree/main),
 [actor evaluation configuration](../online_evaluation_rlbench/eval_peract2.sh),

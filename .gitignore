@@ -42,6 +42,8 @@ test*
 !tests/
 !tests/test_mujoco_transfer.py
 !tests/test_scene_settings.py
+!tests/test_initial_states.py
+!tests/test_randomized_reset.py
 .venv/
 runtime/
 bdp

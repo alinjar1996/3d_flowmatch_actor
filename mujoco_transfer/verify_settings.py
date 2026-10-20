@@ -164,6 +164,60 @@ def verify_settings(scene=DEFAULT_SCENE, config=DEFAULT_CONFIG, *, archive=None,
         environment.close()
 
 
+def verify_initial_state(environment, initial_state, tolerance=1e-6):
+    """Check the applied reset against a selected, verified source demo start.
+
+    The static scene retains its calibration episode. Only the intended reset
+    ball pose is replaced for this check; source base/geometry/goal checks still
+    use the independent native-scene fixture.
+    """
+    config = deepcopy(environment.config)
+    config["scene_settings"]["ball_initial_pose_xyzw"] = initial_state["ball_pose_xyzw"]
+    source = json.loads(SOURCE_SETTINGS.read_text())
+    report = inspect_settings(
+        environment.model, environment.data, config, source,
+        reference_ball_pose=initial_state["ball_pose_xyzw"])
+
+    def vector_check(name, actual, expected):
+        actual, expected = np.asarray(actual, float), np.asarray(expected, float)
+        error = float(np.max(np.abs(actual - expected)))
+        report["checks"].append({
+            "name": name, "passed": bool(np.isfinite(error) and error <= tolerance),
+            "actual": actual.tolist(), "expected": expected.tolist(),
+            "max_absolute_error": error, "tolerance": tolerance,
+        })
+
+    for side in config["arms"]:
+        vector_check(
+            f"{side}_joint_positions_vs_selected_demo",
+            [environment.data.joint(f"joint{i}_{side}").qpos[0] for i in range(1, 8)],
+            initial_state["joint_positions"][side])
+        vector_check(
+            f"{side}_servo_targets_vs_selected_demo",
+            [environment.data.actuator(f"drive_joint{i}_{side}").ctrl[0] for i in range(1, 8)],
+            initial_state["joint_positions"][side])
+        vector_check(
+            f"{side}_gripper_open_vs_selected_demo",
+            [environment.data.joint(f"{finger}_finger_{side}").qpos[0] / 0.04
+             for finger in ("left", "right")],
+            [initial_state["gripper_open"][side]] * 2)
+        vector_check(
+            f"{side}_gripper_servo_targets_vs_selected_demo",
+            [environment.data.actuator(f"drive_{finger}_finger_{side}").ctrl[0] / 0.04
+             for finger in ("left", "right")],
+            [initial_state["gripper_open"][side]] * 2)
+    vector_check("initial_simulation_time", [environment.data.time], [0.0])
+    vector_check("initial_velocities", environment.data.qvel,
+                 np.zeros(environment.model.nv))
+    report["passed"] = all(check["passed"] for check in report["checks"])
+    report["reference_member"] = initial_state["member"]
+    report["reference_archive_sha256"] = initial_state["archive_sha256"]
+    report["note"] = (
+        "Verifies recorded ball pose and joint start; not equivalence of full "
+        "robot kinematics, contact dynamics, or source simulator RNG.")
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene", type=Path, default=DEFAULT_SCENE)

@@ -25,6 +25,13 @@ def main():
     parser.add_argument("--mode", choices=["observe", "infer", "rollout"], default="infer")
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--seed", type=int, default=0)
+    reset_options = parser.add_mutually_exclusive_group()
+    reset_options.add_argument("--randomize", action="store_true",
+                               help="Sample a complete initial state from released ball demos")
+    reset_options.add_argument("--episode", type=int,
+                               help="Use a specific released ball-demo initial state")
+    parser.add_argument("--reset-seed", type=int,
+                        help="Reproduce demo selection with --randomize; default is a fresh seed")
     parser.add_argument("--instruction")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--viewer", action="store_true")
@@ -39,6 +46,10 @@ def main():
     args = parser.parse_args()
     if args.steps < 1:
         parser.error("--steps must be positive")
+    if args.reset_seed is not None and not args.randomize:
+        parser.error("--reset-seed requires --randomize")
+    if args.reset_seed is not None and args.reset_seed < 0:
+        parser.error("--reset-seed must be nonnegative")
     os.environ.setdefault("MUJOCO_GL", "glfw" if args.viewer else "egl")
     os.environ.setdefault("HF_HOME", str(Path("runtime/huggingface").resolve()))
     from .environment import PandaBallEnvironment, read_config
@@ -48,6 +59,8 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     config = read_config(args.config)
+    if (args.randomize or args.episode is not None) and "scene_settings" not in config:
+        parser.error("Source-demo resets require the source-calibrated scene and config")
     instruction = args.instruction or config["instruction"]
     output = args.output or Path("runtime/runs") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     output.mkdir(parents=True, exist_ok=False)
@@ -72,13 +85,39 @@ def main():
                 failed = [c["name"] for c in verification["checks"] if not c["passed"]]
                 raise ValueError(f"Source scene settings mismatch: {failed}")
             print("Source scene settings verified against native scene and released demo", flush=True)
-        env = PandaBallEnvironment(args.scene, config)
+        initial_state, reset_sampler = None, None
+        if args.randomize or args.episode is not None:
+            from .initial_states import SourceEpisodeSampler
+            sampler = SourceEpisodeSampler(args.reference_archive, seed=args.reset_seed)
+            report["initial_state_population_size"] = len(sampler.episodes)
+            if args.randomize:
+                reset_sampler = sampler
+            else:
+                initial_state = sampler.sample(episode=args.episode)
+        env = PandaBallEnvironment(
+            args.scene, config, initial_state=initial_state, reset_sampler=reset_sampler)
+        if env.initial_state is not None:
+            from .verify_settings import verify_initial_state
+            report["initial_state"] = env.initial_state
+            reset_verification = verify_initial_state(env, env.initial_state)
+            report["initial_state_verification"] = reset_verification
+            if not reset_verification["passed"]:
+                failed = [c["name"] for c in reset_verification["checks"] if not c["passed"]]
+                raise ValueError(f"Selected source reset mismatch: {failed}")
+            state = env.initial_state
+            print(f"Source reset: episode {state['episode']} | selection={state['selection']} "
+                  f"| reset seed={state['seed']} | ball XYZ={state['ball_pose_xyzw'][:3]}",
+                  flush=True)
         if args.mode == "rollout" and not args.no_video:
             from .video import RolloutVideo
             video = RolloutVideo(env, output / "rollout.mp4", view=args.video_view)
-            video.hold("Initial observation | pretrained 3DFA", seconds=1)
+            label = "Initial observation | pretrained 3DFA"
+            if env.initial_state is not None:
+                label += f" | source episode {env.initial_state['episode']}"
+            video.hold(label, seconds=1)
             report["video"] = str(output / "rollout.mp4")
             report["video_view"] = args.video_view
+            report["video_settings"] = video.settings
         if args.viewer:
             import mujoco.viewer
             from .video import make_camera
