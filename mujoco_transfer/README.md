@@ -14,6 +14,8 @@ For the resumable 101-run batch over reset seeds 0–100, see
 [SEED_SWEEP.md](SEED_SWEEP.md).
 For the successful observation-transfer setup, preparation and renderer
 comparison, see [RENDERING_TRANSFER.md](RENDERING_TRANSFER.md).
+For comparing your Panda CEM branch with 3DFA on the same physical scene,
+see [GUIDELINE.md](GUIDELINE.md), including the minimal CEM integration needed.
 
 **The unchanged checkpoint now reaches the source lift height on all ten
 tested distinct starting states with `source_mujoco`, and 10/10 with the
