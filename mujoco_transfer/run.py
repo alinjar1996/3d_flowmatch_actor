@@ -65,6 +65,8 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     config = read_config(args.config)
+    source_task = config.get("source_task", "bimanual_lift_ball")
+    object_name = config.get("object_name", "ball")
     if (args.randomize or args.episode is not None) and "scene_settings" not in config:
         parser.error("Source-demo resets require the source-calibrated scene and config")
     instruction = args.instruction or config["instruction"]
@@ -77,10 +79,12 @@ def main():
         "metric": (config.get("success_condition") or config.get("success_proxy")),
         "observation_renderer": args.observation_renderer,
         "physics_backend": "mujoco",
+        "source_task": source_task, "object_name": object_name,
         "implementation_sha256": {
             name: sha256(Path(__file__).parent / name) for name in (
                 "environment.py", "policy.py", "run.py", "source_kinematics.py",
-                "native_renderer.py", "native_worker.py", "source_visual_renderer.py")
+                "native_renderer.py", "native_worker.py", "source_visual_renderer.py",
+                "initial_states.py", "tasks.py", "tray.py", "tray_success.py", "target_ik.py", "video.py")
             if (Path(__file__).parent / name).is_file()},
     }
     manifest = args.scene.parent / "source.json"
@@ -103,7 +107,8 @@ def main():
         initial_state, reset_sampler = None, None
         if args.randomize or args.episode is not None:
             from .initial_states import SourceEpisodeSampler
-            sampler = SourceEpisodeSampler(args.reference_archive, seed=args.reset_seed)
+            sampler = SourceEpisodeSampler(args.reference_archive, seed=args.reset_seed,
+                                           task=source_task)
             report["initial_state_population_size"] = len(sampler.episodes)
             if args.randomize:
                 reset_sampler = sampler
@@ -121,8 +126,10 @@ def main():
                 failed = [c["name"] for c in reset_verification["checks"] if not c["passed"]]
                 raise ValueError(f"Selected source reset mismatch: {failed}")
             state = env.initial_state
+            object_pose = (state["ball_pose_xyzw"] if object_name == "ball"
+                           else state["object_poses_xyzw"][object_name])
             print(f"Source reset: episode {state['episode']} | selection={state['selection']} "
-                  f"| reset seed={state['seed']} | ball XYZ={state['ball_pose_xyzw'][:3]}",
+                  f"| reset seed={state['seed']} | {object_name} XYZ={object_pose[:3]}",
                   flush=True)
         if args.observation_renderer == "source_native":
             from .native_renderer import NativeObservationRenderer
@@ -181,7 +188,7 @@ def main():
             print(f"Loaded {len(policy.actor.state_dict())} tensors strictly; "
                   f"migrated {len(policy.actor.legacy_unused_checkpoint_keys)} unused legacy tensors",
                   flush=True)
-        maximum_ball_height = float(env.data.joint("ball").qpos[2])
+        maximum_ball_height = float(env.data.joint(object_name).qpos[2])
         longest_goal_duration = goal_duration = 0.0
         observation_reports = []
         report["observations"] = observation_reports
@@ -224,7 +231,7 @@ def main():
             def callback():
                 nonlocal maximum_ball_height, goal_duration, longest_goal_duration
                 env.track_success()
-                height = float(env.data.joint("ball").qpos[2])
+                height = float(env.data.joint(object_name).qpos[2])
                 maximum_ball_height = max(maximum_ball_height, height)
                 goal = config.get("success_condition", {}).get("minimum_height_m")
                 if goal is not None:
@@ -236,9 +243,17 @@ def main():
                     viewer.sync()
             entry["controller"] = env.controller.execute(action, callback)
             entry["state_after_action"] = env.adapter.state().tolist()
-            entry["ball_height_m"] = float(env.data.body("ball").xpos[2])
+            entry["object_height_m"] = float(env.data.joint(object_name).qpos[2])
+            entry["object_heights_m"] = {
+                name: float(env.data.joint(name).qpos[2]) for name in env.dynamic_object_names}
+            if object_name == "ball":
+                entry["ball_height_m"] = entry["object_height_m"]
+            if env.last_success_details:
+                entry["success_details"] = env.last_success_details
             entry["task_success"] = bool(env.success)
-            entry["maximum_ball_height_m"] = maximum_ball_height
+            entry["maximum_object_height_m"] = maximum_ball_height
+            if object_name == "ball":
+                entry["maximum_ball_height_m"] = maximum_ball_height
             if env.success:
                 report["stop_reason"] = "task_success"
                 break
@@ -247,9 +262,16 @@ def main():
                 break
         report.setdefault("stop_reason", "step_limit")
         report["task_success"] = bool(env.success)
-        report["maximum_ball_height_m"] = maximum_ball_height
+        report["maximum_object_height_m"] = maximum_ball_height
+        if object_name == "ball":
+            report["maximum_ball_height_m"] = maximum_ball_height
+        if env.last_success_details:
+            report["final_success_details"] = env.last_success_details
+            report["first_success"] = env.first_success
         report["longest_goal_duration_s"] = longest_goal_duration
-        report["goal_duration_note"] = "Measured during executed actions; no extra holding phase."
+        report["goal_duration_note"] = (
+            "Primary object's height only, measured during executed actions; no extra holding phase. "
+            "For tray lifting, this duration does not include the item-height or hand-detection conditions.")
         if video:
             video.hold(f"Result: {report['stop_reason']} | task success: {env.success}", seconds=2)
     except Exception as exc:

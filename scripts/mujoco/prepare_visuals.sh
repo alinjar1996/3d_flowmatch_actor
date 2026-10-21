@@ -27,6 +27,13 @@ if ! "$python_bin" -c 'import pyrep' ; then
   exit 1
 fi
 
-"$python_bin" -m mujoco_transfer.download --source-scenes
+source_task=bimanual_lift_ball
+previous_arg=""
+for argument in "$@"; do
+  if [[ "$previous_arg" == --task ]]; then source_task="$argument"; fi
+  case "$argument" in --task=*) source_task="${argument#--task=}" ;; esac
+  previous_arg="$argument"
+done
+"$python_bin" -m mujoco_transfer.download --source-scenes --task "$source_task"
 "$python_bin" scripts/mujoco/export_source_visuals.py \
-  --rlbench-root runtime/source-audit/RLBench --output runtime/source_visuals "$@"
+  --rlbench-root runtime/source-audit/RLBench "$@"

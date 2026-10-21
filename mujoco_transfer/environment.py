@@ -139,6 +139,13 @@ class CartesianController:
         if self.substeps < 1 or not np.isclose(
                 self.substeps * self.model.opt.timestep, self.config["period"]):
             raise ValueError("Controller period must be an integer number of physics steps")
+        self.backend = self.config.get("backend", "cartesian")
+        if self.backend not in ("cartesian", "bounded_target_ik_initial"):
+            raise ValueError(f"Unsupported controller backend: {self.backend}")
+        self.reset()
+
+    def reset(self):
+        self._initial_target_pending = self.backend == "bounded_target_ik_initial"
 
     def errors(self, targets):
         errors = []
@@ -181,6 +188,10 @@ class CartesianController:
         mujoco.mj_forward(self.model, self.data)
 
     def execute(self, action, callback=None):
+        if self._initial_target_pending:
+            from .target_ik import execute_target_ik
+            self._initial_target_pending = False
+            return execute_target_ik(self, action, callback)
         targets = self.adapter.action_to_sites(action)
         reached = False
         count = 0
@@ -212,6 +223,9 @@ class PandaBallEnvironment:
         self.model = mujoco.MjModel.from_xml_path(str(Path(scene).resolve()))
         self.data = mujoco.MjData(self.model)
         self.config = config
+        self.object_name = config.get("object_name", "ball")
+        self.dynamic_object_names = [self.object_name, *config.get("additional_object_names", [])]
+        self.static_object_names = config.get("static_object_names", [])
         self.reset_sampler = reset_sampler
         self._fixed_initial_state = deepcopy(initial_state)
         self.adapter = ObservationAdapter(self.model, self.data, config)
@@ -222,7 +236,14 @@ class PandaBallEnvironment:
         initial = (self.reset_sampler.sample() if self.reset_sampler is not None
                    else deepcopy(self._fixed_initial_state))
         if initial is not None:
-            ball = pose_matrix(initial["ball_pose_xyzw"])
+            object_poses = initial.get("object_poses_xyzw")
+            if self.object_name == "ball":
+                # Keep the established public ball reset key authoritative.
+                object_poses = {"ball": initial["ball_pose_xyzw"]}
+            if object_poses is None:
+                raise ValueError("Initial state has no task object poses")
+            for name in (*self.dynamic_object_names, *self.static_object_names):
+                pose_matrix(object_poses[name])
             for side in self.config["arms"]:
                 joints = np.asarray(initial["joint_positions"][side], dtype=float)
                 limits = self.controller.joints[side]["limits"]
@@ -234,8 +255,13 @@ class PandaBallEnvironment:
                     raise ValueError(f"Invalid {side} starting gripper opening")
         mujoco.mj_resetData(self.model, self.data)
         if initial is not None:
-            pose = matrix_pose(ball)
-            self.data.joint("ball").qpos[:] = pose[[0, 1, 2, 6, 3, 4, 5]]
+            for name in self.dynamic_object_names:
+                pose = matrix_pose(pose_matrix(object_poses[name]))
+                self.data.joint(name).qpos[:] = pose[[0, 1, 2, 6, 3, 4, 5]]
+            for name in self.static_object_names:
+                pose = matrix_pose(pose_matrix(object_poses[name]))
+                self.model.body(name).pos[:] = pose[:3]
+                self.model.body(name).quat[:] = pose[[6, 3, 4, 5]]
         for side in self.config["arms"]:
             home = initial["joint_positions"] if initial is not None else self.config["home_joints"]
             if isinstance(home, dict):
@@ -253,16 +279,33 @@ class PandaBallEnvironment:
         for _ in range(round(settle_seconds / self.model.opt.timestep)):
             mujoco.mj_step(self.model, self.data)
         mujoco.mj_forward(self.model, self.data)
-        self.initial_ball_height = float(self.data.body("ball").xpos[2])
+        self.initial_object_height = float(self.data.body(self.object_name).xpos[2])
+        self.initial_ball_height = self.initial_object_height  # Existing ball API.
         self.held_seconds = 0
         self.success = False
+        self.last_success_details = {}
+        self.first_success = None
         self.initial_state = deepcopy(initial)
+        self.controller.reset()
 
     def track_success(self):
         # mj_step's derived xpos precedes integration, so read the free joint.
-        height = float(self.data.joint("ball").qpos[2])
+        height = float(self.data.joint(self.object_name).qpos[2])
         condition = self.config.get("success_condition")
         if condition is not None:
+            if condition["kind"] == "tray_lift":
+                from .tray_success import evaluate_tray_success
+                mujoco.mj_kinematics(self.model, self.data)
+                self.last_success_details = evaluate_tray_success(self)
+                if self.last_success_details["success"] and not self.success:
+                    self.first_success = {
+                        "simulation_time_s": float(self.data.time),
+                        "conditions": deepcopy(self.last_success_details),
+                        "qpos": self.data.qpos.tolist(),
+                        "policy_state": self.adapter.state().tolist(),
+                    }
+                self.success |= self.last_success_details["success"]
+                return
             if condition["kind"] != "world_height":
                 raise ValueError(f"Unsupported task success condition: {condition}")
             self.success |= height >= condition["minimum_height_m"]

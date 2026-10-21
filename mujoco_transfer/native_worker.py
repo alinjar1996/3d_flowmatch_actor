@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 
 from .geometry import pose_matrix
 from .source_kinematics import SourceArmKinematics, rotation_z, source_camera_calibration
+from .tasks import TASKS, task_spec
 
 
 def write_json(path, value):
@@ -25,6 +26,7 @@ def main():
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--task", choices=TASKS, default="bimanual_lift_ball")
     args = parser.parse_args()
     from pyrep import PyRep
     from pyrep.const import RenderMode, Verbosity
@@ -34,13 +36,24 @@ def main():
     from pyrep.objects.vision_sensor import VisionSensor
 
     scene = args.source_root / "rlbench/task_design_bimanual.ttt"
-    task_path = args.source_root / "rlbench/task_ttms/bimanual_lift_ball.ttm"
-    calibration = source_camera_calibration(args.archive)
+    task_path = args.source_root / f"rlbench/task_ttms/{args.task}.ttm"
+    calibration = source_camera_calibration(args.archive, task=args.task)
+    spec = task_spec(args.task)
+    object_names = [spec["object_name"], *spec["additional_object_names"],
+                    *spec["static_object_names"]]
     simulation = PyRep()
     simulation.launch(str(scene), headless=True, verbosity=Verbosity.ERRORS)
     try:
         task = simulation.import_model(str(task_path))
         task.set_position(Shape("workspace").get_position())
+        task_objects = {name: Shape(name) for name in object_names}
+        if args.task != "bimanual_lift_ball":
+            # The authored hierarchy parents the tray to its support and the
+            # item to the tray. Physical dynamics release those objects, so
+            # each actual pose must be independent during observation render.
+            # Visual children such as tray_visual remain attached to the tray.
+            for obj in task_objects.values():
+                obj.set_parent(None, keep_in_place=True)
         arms = {}
         for side in ("left", "right"):
             joints = [Joint(f"Panda_{side}Arm_joint{i}") for i in range(1, 8)]
@@ -82,6 +95,7 @@ def main():
             "robot_alignment": "bounded native IK seeded with actual MuJoCo arm joints",
             "scene_path": str(scene), "scene_sha256": hashlib.sha256(scene.read_bytes()).hexdigest(),
             "task_path": str(task_path), "task_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+            "task": args.task, "object_names": object_names,
             "calibration_archive": str(args.archive), "camera_calibration": calibration,
             "fk_validation_error": {side: arm["fk_validation_error"] for side, arm in arms.items()},
         }
@@ -94,13 +108,22 @@ def main():
             sequence = request["sequence"]
             response_path = args.output / f"response_{sequence:04d}.json"
             try:
+                object_poses = request.get("object_poses_xyzw")
+                if object_poses is None and args.task == "bimanual_lift_ball":
+                    object_poses = {"ball": request["ball_pose_xyzw"]}
+                if object_poses is None or set(object_poses) != set(task_objects):
+                    raise ValueError(f"Expected current physical poses for {object_names}")
                 metadata = {
                     "renderer": "source_native", "sequence": sequence,
                     "simulation_time": request["simulation_time"], "arms": {}, "cameras": {},
-                    "ball_pose_xyzw": request["ball_pose_xyzw"],
+                    "object_name": spec["object_name"],
+                    "object_pose_xyzw": object_poses[spec["object_name"]],
+                    "object_poses_xyzw": object_poses,
                     "policy_state": request["policy_state"],
                     "state_source": "current MuJoCo state; no demonstration replay",
                 }
+                if args.task == "bimanual_lift_ball":
+                    metadata["ball_pose_xyzw"] = object_poses["ball"]
                 for index, side in enumerate(("left", "right")):
                     target = pose_matrix(request["policy_state"][index][:7])
                     arm = arms[side]
@@ -124,7 +147,10 @@ def main():
                                      rendered_tcp_matrix=actual.tolist(), target_tcp_matrix=target.tolist(),
                                      fk_runtime_error=float(np.max(np.abs(arm["chain"].forward(values) - actual))))
                     metadata["arms"][side] = alignment
-                Shape("ball").set_pose(request["ball_pose_xyzw"])
+                for name, obj in task_objects.items():
+                    obj.set_pose(object_poses[name])
+                metadata["rendered_object_poses_xyzw"] = {
+                    name: obj.get_pose().tolist() for name, obj in task_objects.items()}
                 rgbs, clouds, depths = [], [], []
                 for name, camera in cameras.items():
                     settings = calibration["cameras"][name]

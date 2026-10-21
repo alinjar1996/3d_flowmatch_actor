@@ -12,12 +12,15 @@ from mujoco_transfer.initial_states import SourceEpisodeSampler
 
 
 @pytest.mark.parametrize("backend", ["source_native", "source_mujoco"])
-def test_live_rendering_preserves_physics_and_tracks_new_state(backend, tmp_path):
+@pytest.mark.parametrize("task", ["bimanual_lift_ball", "bimanual_lift_tray"])
+def test_live_rendering_preserves_physics_and_tracks_new_state(backend, task, tmp_path):
     flag = "TEST_NATIVE_RENDER" if backend == "source_native" else "TEST_SOURCE_RENDER"
     if os.environ.get(flag) != "1":
         pytest.skip(f"Requires {flag}=1 and local source assets/graphics")
-    folder = Path("runtime/panda_ball_reference")
-    initial = SourceEpisodeSampler("runtime/peract2_test.zip").sample(episode=94)
+    tray = task == "bimanual_lift_tray"
+    object_name = "tray" if tray else "ball"
+    folder = Path("runtime/panda_tray_reference" if tray else "runtime/panda_ball_reference")
+    initial = SourceEpisodeSampler("runtime/peract2_test.zip", task=task).sample(episode=94)
     env = PandaBallEnvironment(folder / "scene.xml", read_config(folder / "reference_config.json"),
                                initial_state=initial)
     renderer = None
@@ -27,7 +30,8 @@ def test_live_rendering_preserves_physics_and_tracks_new_state(backend, tmp_path
             renderer = NativeObservationRenderer(env, tmp_path / backend)
         else:
             from mujoco_transfer.source_visual_renderer import SourceVisualObservationRenderer
-            renderer = SourceVisualObservationRenderer(env, output_dir=tmp_path / backend)
+            assets = "runtime/source_visuals_tray" if tray else "runtime/source_visuals"
+            renderer = SourceVisualObservationRenderer(env, assets_dir=assets, output_dir=tmp_path / backend)
 
         def observe_and_check():
             before = [env.data.qpos.copy(), env.data.qvel.copy(), env.data.ctrl.copy(), env.data.time]
@@ -43,16 +47,34 @@ def test_live_rendering_preserves_physics_and_tracks_new_state(backend, tmp_path
             for side in ("left", "right"):
                 assert alignments[side]["position_error_m"] < .002
                 assert alignments[side]["rotation_error_rad"] < .02
-            np.testing.assert_allclose(metadata["ball_pose_xyzw"][:3],
-                                       env.data.joint("ball").qpos[:3], atol=1e-6)
-            # At this unoccluded reset, surface samples must follow the actual
-            # ball centre. This checks the metric XYZ output as well as RGB.
-            distance = np.linalg.norm(points - env.data.joint("ball").qpos[:3], axis=-1)
-            assert np.count_nonzero(abs(distance - .15) < .008) > 100
+            names = ("tray", "item", "drawer_legs", "drawer_legs0") if tray else ("ball",)
+            assert metadata["object_name"] == object_name
+            for name in names:
+                np.testing.assert_allclose(metadata["object_poses_xyzw"][name][:3],
+                                           env.data.body(name).xpos, atol=1e-6)
+                if backend == "source_native":
+                    # Verify the native scene after reparenting, independently
+                    # of the requested state echoed in its metadata.
+                    np.testing.assert_allclose(metadata["rendered_object_poses_xyzw"][name][:3],
+                                               env.data.body(name).xpos, atol=1e-6)
+                else:
+                    np.testing.assert_allclose(renderer.data.body(name).xpos,
+                                               env.data.body(name).xpos, atol=1e-6)
+            if not tray:
+                np.testing.assert_allclose(metadata["ball_pose_xyzw"][:3],
+                                           env.data.joint("ball").qpos[:3], atol=1e-6)
+                # At this unoccluded reset, surface samples must follow the actual
+                # ball centre. This checks metric XYZ output as well as RGB.
+                distance = np.linalg.norm(points - env.data.joint("ball").qpos[:3], axis=-1)
+                assert np.count_nonzero(abs(distance - .15) < .008) > 100
             return rgb, points, state
 
         first = observe_and_check()
-        env.data.joint("ball").qpos[0] += .08
+        env.data.joint(object_name).qpos[0] += .08
+        if tray:
+            env.data.joint("item").qpos[1] += .07
+            env.model.body("drawer_legs").pos[0] += .03
+            env.model.body("drawer_legs0").pos[1] -= .02
         env.data.joint("joint7_left").qpos[0] += .04
         mujoco.mj_forward(env.model, env.data)
         second = observe_and_check()

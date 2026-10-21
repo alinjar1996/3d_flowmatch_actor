@@ -200,6 +200,30 @@ def test_sequential_sweep_distinguishes_task_failure_and_execution_error(
     assert summary["rows"][1]["state"] == "completed"
 
 
+def test_tray_summary_uses_reported_success_not_only_height(tmp_path, fake_children):
+    output = tmp_path / "tray-batch"
+    assert sweep.main(batch_args(output, end_seed=0)) == 0
+    report_path = output / "seed_000/attempt_001/report.json"
+    report = json.loads(report_path.read_text())
+    report.update(source_task="bimanual_lift_tray", object_name="tray",
+                  task_success=False, stop_reason="step_limit")
+    step = report["steps"][0]
+    step.pop("ball_height_m")
+    step.update(object_height_m=1.25, task_success=False,
+                success_details={"tray_lifted": True, "item_lifted": False,
+                                 "left_detected": True, "right_detected": True})
+    report_path.write_text(json.dumps(report))
+    row = sweep.read_result(0, 0, output / "seed_000/attempt_001.status.json")
+    assert row["state"] == "completed"
+    assert row["object_name"] == "tray"
+    assert row["object_height_m"] == 1.25
+    assert row["ball_height_m"] is None
+    summary = sweep.summarize([row], 0, 0)
+    assert summary["successes"] == 0
+    assert summary["task_failures"] == 1
+    assert summary["execution_errors"] == 0
+
+
 def test_resume_skips_valid_task_failures_and_retry_preserves_failed_attempt(
         tmp_path, fake_children):
     output = tmp_path / "batch"

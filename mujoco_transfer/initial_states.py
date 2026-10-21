@@ -1,12 +1,13 @@
-"""Reproduce released 3DFA ball-lifting reset states without inventing jitter.
+"""Reproduce released 3DFA lifting reset states without inventing jitter.
 
 The source evaluator iterates stored demonstrations and calls ``reset_to_demo``.
-Each sample here keeps the ball and both arms from the same demonstration.
+Each sample keeps the task objects, support racks and both arms paired.
 """
 
 from copy import deepcopy
 import hashlib
 import io
+import json
 import operator
 from pathlib import Path
 import re
@@ -18,10 +19,6 @@ import numpy as np
 
 SOURCE_ARCHIVE_SHA256 = (
     "d732886a9a9790a51d4ca71bcaa1727662c6dc0c490d402a1b0fce440c29d5a5"
-)
-_EPISODE_MEMBER = re.compile(
-    r"peract2_test/bimanual_lift_ball/variation0/episodes/"
-    r"episode([0-9]+)/low_dim_obs\.pkl"
 )
 
 
@@ -44,7 +41,21 @@ class SourceEpisodeSampler:
     caches only the validated first state of each requested demonstration.
     """
 
-    def __init__(self, archive, seed=None, expected_sha256=SOURCE_ARCHIVE_SHA256):
+    def __init__(self, archive, seed=None, expected_sha256=SOURCE_ARCHIVE_SHA256,
+                 *, task="bimanual_lift_ball"):
+        from .tasks import task_spec, fixture_path
+        self.task = task
+        self.spec = task_spec(task)
+        self.object_name = self.spec["object_name"]
+        fixture = json.loads(fixture_path(task).read_text())
+        self.task_descendants = fixture["task_descendants"]
+        self.object_names = [self.object_name, *self.spec["additional_object_names"],
+                             *self.spec["static_object_names"]]
+        self.object_indices = {name: self.task_descendants.index(name)
+                               for name in self.object_names}
+        episode_member = re.compile(
+            rf"peract2_test/{re.escape(task)}/variation0/episodes/"
+            r"episode([0-9]+)/low_dim_obs\.pkl")
         self.archive = Path(archive)
         digest = hashlib.sha256()
         with self.archive.open("rb") as stream:
@@ -60,7 +71,7 @@ class SourceEpisodeSampler:
         self._members = {}
         with zipfile.ZipFile(self.archive) as source:
             for member in source.namelist():
-                match = _EPISODE_MEMBER.fullmatch(member)
+                match = episode_member.fullmatch(member)
                 if match is None:
                     continue
                 episode = int(match.group(1))
@@ -68,7 +79,7 @@ class SourceEpisodeSampler:
                     raise ValueError(f"Duplicate source episode {episode}")
                 self._members[episode] = member
         if not self._members:
-            raise ValueError("Archive contains no bimanual_lift_ball variation0 episodes")
+            raise ValueError(f"Archive contains no {task} variation0 episodes")
         self.episodes = tuple(sorted(self._members))
 
         if seed is None:
@@ -94,13 +105,17 @@ class SourceEpisodeSampler:
             demo = NumericReferenceUnpickler(io.BytesIO(source.read(member))).load()
         try:
             first = demo._observations[0]
-            # The audited task has nine objects, with the ball first. Source
-            # observations wrap the 63-vector in a one-element tuple.
+            # Object order comes from the independently inspected native task.
+            # Tray episodes include two dynamic objects and two support racks.
             task_state = np.asarray(first.task_low_dim_state, dtype=np.float64).reshape(-1)
-            task_state = _numeric(task_state, "task_low_dim_state", (63,))
-            ball = task_state[:7]
-            if np.linalg.norm(ball[3:]) == 0:
-                raise ValueError("Ball quaternion must have nonzero norm")
+            task_state = _numeric(task_state, "task_low_dim_state",
+                                  (7 * len(self.task_descendants),))
+            poses = {}
+            for name, index in self.object_indices.items():
+                pose = task_state[7 * index:7 * (index + 1)]
+                if np.linalg.norm(pose[3:]) == 0:
+                    raise ValueError(f"{name} quaternion must have nonzero norm")
+                poses[name] = pose.tolist()
             joints, grippers = {}, {}
             for side in ("left", "right"):
                 arm = getattr(first, side)
@@ -117,10 +132,14 @@ class SourceEpisodeSampler:
             "episode": episode,
             "member": member,
             "archive_sha256": self.archive_sha256,
-            "ball_pose_xyzw": ball.tolist(),
+            "source_task": self.task,
+            "object_name": self.object_name,
+            "object_poses_xyzw": poses,
             "joint_positions": joints,
             "gripper_open": grippers,
         }
+        if self.object_name == "ball":
+            state["ball_pose_xyzw"] = poses["ball"].copy()
         self._cache[episode] = state
         return state
 

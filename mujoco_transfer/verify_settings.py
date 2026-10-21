@@ -122,6 +122,9 @@ def verify_settings(scene=DEFAULT_SCENE, config=DEFAULT_CONFIG, *, archive=None,
     """Reset an isolated environment, inspect settings, and probe task success."""
     if not isinstance(config, dict):
         config = read_config(config)
+    if config.get("source_task") == "bimanual_lift_tray":
+        from .tray import verify_tray_settings
+        return verify_tray_settings(scene, config, archive=archive, episode=episode)
     if expected_scene is None:
         expected_scene = SOURCE_SETTINGS
     if not isinstance(expected_scene, dict):
@@ -172,11 +175,18 @@ def verify_initial_state(environment, initial_state, tolerance=1e-6):
     use the independent native-scene fixture.
     """
     config = deepcopy(environment.config)
-    config["scene_settings"]["ball_initial_pose_xyzw"] = initial_state["ball_pose_xyzw"]
-    source = json.loads(SOURCE_SETTINGS.read_text())
-    report = inspect_settings(
-        environment.model, environment.data, config, source,
-        reference_ball_pose=initial_state["ball_pose_xyzw"])
+    if config.get("source_task") == "bimanual_lift_tray":
+        from .tasks import fixture_path
+        from .tray import inspect_tray_settings
+        source = json.loads(fixture_path("bimanual_lift_tray").read_text())
+        report = inspect_tray_settings(environment.model, environment.data, config, source,
+                                       poses=initial_state["object_poses_xyzw"])
+    else:
+        config["scene_settings"]["ball_initial_pose_xyzw"] = initial_state["ball_pose_xyzw"]
+        source = json.loads(SOURCE_SETTINGS.read_text())
+        report = inspect_settings(
+            environment.model, environment.data, config, source,
+            reference_ball_pose=initial_state["ball_pose_xyzw"])
 
     def vector_check(name, actual, expected):
         actual, expected = np.asarray(actual, float), np.asarray(expected, float)
@@ -213,7 +223,7 @@ def verify_initial_state(environment, initial_state, tolerance=1e-6):
     report["reference_member"] = initial_state["member"]
     report["reference_archive_sha256"] = initial_state["archive_sha256"]
     report["note"] = (
-        "Verifies recorded ball pose and joint start; not equivalence of full "
+        "Verifies recorded object poses and joint start; not equivalence of full "
         "robot kinematics, contact dynamics, or source simulator RNG.")
     return report
 

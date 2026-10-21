@@ -14,6 +14,8 @@ For the resumable 101-run batch over reset seeds 0–100, see
 [SEED_SWEEP.md](SEED_SWEEP.md).
 For the successful observation-transfer setup, preparation and renderer
 comparison, see [RENDERING_TRANSFER.md](RENDERING_TRANSFER.md).
+For the prepared tray-and-item task, its source success conditions, four-angle
+videos and reset-seed sweep, see [TRAY_TRANSFER.md](TRAY_TRANSFER.md).
 
 **The unchanged checkpoint now reaches the source lift height on all ten
 tested distinct starting states with `source_mujoco`, and 10/10 with the

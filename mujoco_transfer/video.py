@@ -28,7 +28,7 @@ def make_ball_goal_marker(env):
     """
     condition = env.config.get("success_condition")
     if condition is not None:
-        if condition["kind"] != "world_height":
+        if condition["kind"] not in ("world_height", "tray_lift"):
             return None
         height = condition["minimum_height_m"]
     else:
@@ -36,14 +36,16 @@ def make_ball_goal_marker(env):
         if proxy is None:
             return None
         height = env.initial_ball_height + proxy["ball_rise_metres"]
-    center = env.data.joint("ball").qpos[:3].copy()
+    object_name = env.config.get("object_name", "ball")
+    center = env.data.joint(object_name).qpos[:3].copy()
     center[2] = height
     return {
         "shape": "box",
         "center_world_m": center.tolist(),
         "half_size_m": [0.1, 0.1, 0.1],
         "rgba": [0.85, 0.85, 0.85, 0.25],
-        "meaning": "Cube center marks goal height; XY is the initial ball position, "
+        "object_name": object_name,
+        "meaning": "Cube center marks goal height; XY is the initial object position, "
                    "not a task constraint. Observer only; no physics or policy input.",
     }
 
@@ -163,8 +165,11 @@ class RolloutVideo:
         draw.rectangle((0, 0, TILE_WIDTH, 60), fill=(15, 20, 30))
         draw.text((10, 7), f"{view.title()} view", fill=(170, 210, 255))
         draw.text((10, 24), self.label, fill="white")
-        rise = self.env.data.body("ball").xpos[2] - self.env.initial_ball_height
-        status = f"simulation t={self.env.data.time:.2f}s | ball rise={rise:.3f}m"
+        object_name = self.env.config.get("object_name", "ball")
+        rise = self.env.data.body(object_name).xpos[2] - self.env.initial_object_height
+        status = f"simulation t={self.env.data.time:.2f}s | {object_name} rise={rise:.3f}m"
+        if object_name == "tray":
+            status += f" | item z={self.env.data.joint('item').qpos[2]:.2f}m"
         if self.goal_marker is not None:
             status += f" | grey cube: goal z={self.goal_marker['center_world_m'][2]:.2f}m"
         draw.text((10, 41), status, fill="white")

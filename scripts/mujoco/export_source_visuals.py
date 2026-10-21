@@ -27,11 +27,22 @@ import numpy as np
 from PIL import Image
 
 
-FILES = {
-    "scene": "rlbench/task_design_bimanual.ttt",
-    "task_model": "rlbench/task_ttms/bimanual_lift_ball.ttm",
-    "task_code": "rlbench/bimanual_tasks/bimanual_lift_ball.py",
+TASKS = {
+    "bimanual_lift_ball": {"object_name": "ball", "additional_object_names": [],
+                           "static_object_names": [], "fixture": "peract2_scene.json",
+                           "assets": "source_visuals"},
+    "bimanual_lift_tray": {"object_name": "tray", "additional_object_names": ["item"],
+                           "static_object_names": ["drawer_legs", "drawer_legs0"],
+                           "fixture": "peract2_tray_scene.json", "assets": "source_visuals_tray"},
 }
+
+
+def source_files(task_name):
+    return {
+        "scene": "rlbench/task_design_bimanual.ttt",
+        "task_model": f"rlbench/task_ttms/{task_name}.ttm",
+        "task_code": f"rlbench/bimanual_tasks/{task_name}.py",
+    }
 
 
 def matrix4(matrix):
@@ -102,21 +113,23 @@ def shape_components(sim, handle):
     raise RuntimeError("Unexpectedly many shape components")
 
 
-def export(root, output, source_commit):
+def export(root, output, source_commit, task_name="bimanual_lift_ball"):
     from pyrep import PyRep
     from pyrep.backend import sim
     from pyrep.const import ObjectType, Verbosity
     from pyrep.objects.shape import Shape
     from pyrep.objects.vision_sensor import VisionSensor
 
+    files = source_files(task_name)
+    task_spec = TASKS[task_name]
     output.mkdir(parents=True, exist_ok=True)
     (output / "meshes").mkdir(exist_ok=True)
     (output / "textures").mkdir(exist_ok=True)
     simulator = PyRep()
-    simulator.launch(str(root / FILES["scene"]), headless=True,
+    simulator.launch(str(root / files["scene"]), headless=True,
                      verbosity=Verbosity.ERRORS)
     try:
-        task = simulator.import_model(str(root / FILES["task_model"]))
+        task = simulator.import_model(str(root / files["task_model"]))
         task.set_position(Shape("workspace").get_position())
         # The XML serialization also retains visual switches not exposed by
         # simGetShapeViz (notably whether translucency is enabled).
@@ -127,6 +140,10 @@ def export(root, output, source_commit):
                        for node in xml_scene.findall("sceneObject")}
         handles = sim.simGetObjectsInTree(sim.sim_handle_scene, sim.sim_handle_all, 0)
         names = {h: sim.simGetObjectName(h) for h in handles}
+        for name in [task_spec["object_name"], *task_spec["additional_object_names"],
+                     *task_spec["static_object_names"]]:
+            if name not in names.values():
+                raise ValueError(f"Task {task_name} has no movable object {name!r}")
         matrices = {h: matrix4(sim.simGetObjectMatrix(h, -1)) for h in handles}
         records = []
         for handle in handles:
@@ -237,10 +254,13 @@ def export(root, output, source_commit):
         validation = kinematic_checks(sim, records)
         manifest = {
             "schema_version": 1,
+            "task": {"name": task_name, "object_name": task_spec["object_name"],
+                     "additional_object_names": task_spec["additional_object_names"],
+                     "static_object_names": task_spec["static_object_names"]},
             "source": {
                 "repository": "https://github.com/markusgrotz/RLBench", "commit": source_commit,
                 "files": {key: {"path": value, "sha256": hashlib.sha256((root / value).read_bytes()).hexdigest()}
-                          for key, value in FILES.items()},
+                          for key, value in files.items()},
                 "simulator": "CoppeliaSim 4.1.0", "physics_stepped": False,
             },
             "conventions": {
@@ -334,13 +354,23 @@ def kinematic_checks(sim, records):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--rlbench-root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=Path("runtime/source_visuals"))
-    parser.add_argument("--source-commit", default="8af748c51287989294e00c9c670e3330a0e35ed5")
+    parser.add_argument("--task", choices=TASKS, default="bimanual_lift_ball")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--source-commit")
     args = parser.parse_args()
-    for path in FILES.values():
+    task_spec = TASKS[args.task]
+    fixture_path = Path(__file__).resolve().parents[2] / "mujoco_transfer" / "configs" / task_spec["fixture"]
+    fixture = json.loads(fixture_path.read_text())
+    source_commit = args.source_commit or fixture["source"]["commit"]
+    for key, path in source_files(args.task).items():
         if not (args.rlbench_root / path).is_file():
             parser.error(f"Missing source file: {args.rlbench_root / path}")
-    export(args.rlbench_root.resolve(), args.output.resolve(), args.source_commit)
+        if source_commit == fixture["source"]["commit"]:
+            actual = hashlib.sha256((args.rlbench_root / path).read_bytes()).hexdigest()
+            if actual != fixture["source"][key]["sha256"]:
+                parser.error(f"Source {key} does not match the pinned {args.task} fixture")
+    output = args.output or Path("runtime") / task_spec["assets"]
+    export(args.rlbench_root.resolve(), output.resolve(), source_commit, args.task)
 
 
 if __name__ == "__main__":

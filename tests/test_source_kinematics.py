@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from mujoco_transfer.source_kinematics import SourceArmKinematics
+from mujoco_transfer.source_kinematics import SourceArmKinematics, source_camera_calibration
 
 
 @pytest.fixture(params=["left", "right"])
@@ -50,3 +50,26 @@ def test_source_ik_reports_unreachable_pose_without_hiding_residual(arm):
     assert np.isfinite(joints).all()
     assert np.all(joints >= chain.limits[:, 0])
     assert np.all(joints <= chain.limits[:, 1])
+
+
+@pytest.mark.parametrize("task,asset_directory", [
+    ("bimanual_lift_ball", "source_visuals"),
+    ("bimanual_lift_tray", "source_visuals_tray"),
+])
+def test_selected_task_camera_mounts_match_independent_native_export(task, asset_directory):
+    from mujoco_transfer.source_visual_renderer import camera_calibration_from_manifest
+
+    runtime = Path(__file__).resolve().parents[1] / "runtime"
+    archive = runtime / "peract2_test.zip"
+    manifest_path = runtime / asset_directory / "manifest.json"
+    if not archive.is_file() or not manifest_path.is_file():
+        pytest.skip("Requires released task archive and independent native visual export")
+    dataset_calibration = source_camera_calibration(archive, task=task)
+    assert dataset_calibration["member"] == (
+        f"peract2_test/{task}/variation0/episodes/episode3/low_dim_obs.pkl")
+    native_calibration = camera_calibration_from_manifest(json.loads(manifest_path.read_text()))
+    for name, native in native_calibration.items():
+        actual = dataset_calibration["cameras"][name]
+        np.testing.assert_allclose(actual["matrix"], native["matrix"], atol=1e-6, rtol=0)
+        np.testing.assert_allclose([actual[k] for k in ("near", "far", "fovy")],
+                                   [native[k] for k in ("near", "far", "fovy")], atol=1e-5, rtol=0)

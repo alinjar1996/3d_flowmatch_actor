@@ -19,7 +19,7 @@ import time
 FIELDS = (
     "reset_seed", "policy_seed", "state", "attempt", "source_episode",
     "task_success", "stop_reason", "steps", "mean_inference_seconds",
-    "ball_height_m", "report_path", "video_path", "log_path", "error",
+    "ball_height_m", "object_name", "object_height_m", "report_path", "video_path", "log_path", "error",
 )
 FINISHED_REASONS = {"task_success", "controller_timeout", "step_limit"}
 
@@ -100,8 +100,9 @@ def fingerprint(args):
     inputs.update(path.resolve() for path in args.scene.parent.rglob("*")
                   if path.is_file() and path.suffix.lower() in model_suffixes)
     if args.observation_renderer == "source_native":
+        source_task = json.loads(args.config.read_text()).get("source_task", "bimanual_lift_ball")
         inputs.update((args.source_scene_root / path).resolve() for path in
-                      ("rlbench/task_design_bimanual.ttt", "rlbench/task_ttms/bimanual_lift_ball.ttm"))
+                      ("rlbench/task_design_bimanual.ttt", f"rlbench/task_ttms/{source_task}.ttm"))
         inputs.add((args.coppeliasim_root / "libcoppeliaSim.so").resolve())
     elif args.observation_renderer == "source_mujoco":
         manifest_path = args.source_visual_assets / "manifest.json"
@@ -139,8 +140,9 @@ def preflight(args):
     if args.observation_renderer == "source_mujoco" and not (args.source_visual_assets / "manifest.json").is_file():
         raise ValueError("Missing source visual export; run scripts/mujoco/export_source_visuals.py first")
     if args.observation_renderer == "source_native":
+        source_task = json.loads(args.config.read_text()).get("source_task", "bimanual_lift_ball")
         for path in (args.source_scene_root / "rlbench/task_design_bimanual.ttt",
-                     args.source_scene_root / "rlbench/task_ttms/bimanual_lift_ball.ttm",
+                     args.source_scene_root / f"rlbench/task_ttms/{source_task}.ttm",
                      args.coppeliasim_root / "libcoppeliaSim.so"):
             if not path.is_file():
                 raise ValueError(f"Missing native renderer dependency: {path}")
@@ -187,7 +189,9 @@ def read_result(seed, policy_seed, status_path):
         if type(initial.get("episode")) is not int:
             raise ValueError("Report has no source episode")
         times = [float(entry["inference_seconds"]) for entry in steps]
-        height = float(steps[-1]["ball_height_m"])
+        object_name = report.get("object_name", "ball")
+        height = float(steps[-1]["object_height_m"] if "object_height_m" in steps[-1]
+                       else steps[-1]["ball_height_m"])
         if not all(math.isfinite(value) and value >= 0 for value in times) or not math.isfinite(height):
             raise ValueError("Report contains invalid numerical metrics")
         video = Path(report["video"])
@@ -196,7 +200,9 @@ def read_result(seed, policy_seed, status_path):
         row.update(
             state="completed", source_episode=initial["episode"], task_success=success,
             stop_reason=report["stop_reason"], steps=len(steps),
-            mean_inference_seconds=sum(times) / len(times), ball_height_m=height,
+            mean_inference_seconds=sum(times) / len(times),
+            ball_height_m=height if object_name == "ball" else None,
+            object_name=object_name, object_height_m=height,
             video_path=str(video), error=None,
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:

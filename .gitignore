@@ -48,6 +48,9 @@ test*
 !tests/test_observation_renderers.py
 !tests/test_source_kinematics.py
 !tests/test_source_visual_renderer.py
+!tests/test_tray_success.py
+!tests/test_tray_transfer.py
+!tests/test_target_ik.py
 !tests/fixtures/
 !tests/fixtures/source_arm_kinematics.json
 .venv/

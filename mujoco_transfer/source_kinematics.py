@@ -21,11 +21,13 @@ def rotation_z(angle):
                      [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
 
 
-def source_camera_calibration(archive, episode=3):
+def source_camera_calibration(archive, episode=3, task="bimanual_lift_ball"):
     """Read only fixed camera calibration, not rendered observations or actions."""
     from .reference import NumericReferenceUnpickler
+    from .tasks import task_spec
 
-    member = ("peract2_test/bimanual_lift_ball/variation0/episodes/"
+    task_spec(task)
+    member = (f"peract2_test/{task}/variation0/episodes/"
               f"episode{episode}/low_dim_obs.pkl")
     with zipfile.ZipFile(archive) as dataset:
         demo = NumericReferenceUnpickler(io.BytesIO(dataset.read(member))).load()
@@ -45,7 +47,7 @@ def source_camera_calibration(archive, episode=3):
             "fovy": float(np.rad2deg(2 * np.arctan(
                 128 / abs(observation.misc[name + "_camera_intrinsics"][1, 1])))),
         }
-    return {"episode": episode, "member": member, "cameras": cameras}
+    return {"task": task, "episode": episode, "member": member, "cameras": cameras}
 
 
 class SourceArmKinematics:

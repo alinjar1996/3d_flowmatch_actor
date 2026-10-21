@@ -29,6 +29,8 @@ def download_verified(url, expected_hash, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--task", choices=("bimanual_lift_ball", "bimanual_lift_tray"),
+                        default="bimanual_lift_ball", help="Task for --source-scenes")
     kind = parser.add_mutually_exclusive_group()
     kind.add_argument("--reference-data", action="store_true",
                       help="Download the 229MB test metadata used for reference calibration")
@@ -36,13 +38,16 @@ def main():
                       help="Download pinned native scene assets; --output is a directory")
     args = parser.parse_args()
     if args.source_scenes:
-        source = json.loads((Path(__file__).parent / "configs/peract2_scene.json").read_text())["source"]
+        from .tasks import fixture_path
+        source = json.loads(fixture_path(args.task).read_text())["source"]
         destination = args.output or Path("runtime/source-audit/RLBench")
         for key in ("scene", "task_model", "task_code"):
             item = source[key]
             url = f"https://raw.githubusercontent.com/markusgrotz/RLBench/{source['commit']}/{item['path']}"
             download_verified(url, item["sha256"], destination / item["path"])
-        (destination / "source.json").write_text(json.dumps(source, indent=2) + "\n")
+        (destination / f"{args.task}_source.json").write_text(json.dumps(source, indent=2) + "\n")
+        if args.task == "bimanual_lift_ball":
+            (destination / "source.json").write_text(json.dumps(source, indent=2) + "\n")
         return
     if args.reference_data:
         url = "https://huggingface.co/katefgroup/3d_flowmatch_actor/resolve/main/peract2_test.zip"

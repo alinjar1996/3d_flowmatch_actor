@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 from .geometry import matrix_pose, pose_matrix
+from .tasks import task_spec
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,12 +31,23 @@ class NativeObservationRenderer:
         self.sequence = 0
         self.last_metadata = {}
         self.process = None
+        self.task_name = env.config.get("source_task", "bimanual_lift_ball")
+        spec = task_spec(self.task_name)
+        self.object_name = env.config.get("object_name", "ball")
+        self.static_object_names = env.config.get("static_object_names", [])
+        self.object_names = [self.object_name, *env.config.get("additional_object_names", []),
+                             *self.static_object_names]
+        expected_objects = [spec["object_name"], *spec["additional_object_names"],
+                            *spec["static_object_names"]]
+        if self.object_names != expected_objects:
+            raise ValueError(f"Source task {self.task_name} expects {expected_objects}, "
+                             f"but physical environment declares {self.object_names}")
         source_root = Path(source_root or PROJECT_ROOT / "runtime/source-audit/RLBench").resolve()
         coppelia_root = Path(coppelia_root or PROJECT_ROOT /
                              "runtime/source-audit/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04").resolve()
         archive = Path(archive or PROJECT_ROOT / "runtime/peract2_test.zip").resolve()
         for path in (source_root / "rlbench/task_design_bimanual.ttt",
-                     source_root / "rlbench/task_ttms/bimanual_lift_ball.ttm",
+                     source_root / f"rlbench/task_ttms/{self.task_name}.ttm",
                      coppelia_root / "libcoppeliaSim.so", archive):
             if not path.is_file():
                 raise FileNotFoundError(f"Source rendering dependency missing: {path}")
@@ -55,7 +67,7 @@ class NativeObservationRenderer:
         ready.unlink(missing_ok=True)
         command = [sys.executable, "-m", "mujoco_transfer.native_worker",
                    "--source-root", str(source_root), "--archive", str(archive),
-                   "--output", str(self.output_dir)]
+                   "--output", str(self.output_dir), "--task", self.task_name]
         try:
             self.process = subprocess.Popen(command, cwd=PROJECT_ROOT, env=environment,
                                             stdin=subprocess.PIPE, stdout=self.log,
@@ -83,13 +95,23 @@ class NativeObservationRenderer:
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError("Source renderer is closed")
         state = self.env.adapter.state()
-        ball_mj = self.env.data.joint("ball").qpos.copy()
-        ball = matrix_pose(self.env.adapter.world_transform @
-                           pose_matrix(ball_mj[[0, 1, 2, 4, 5, 6, 3]]))
+        object_poses = {}
+        for name in self.object_names:
+            if name in self.static_object_names:
+                body = self.env.data.body(name)
+                physical_matrix = np.eye(4)
+                physical_matrix[:3, 3] = body.xpos
+                physical_matrix[:3, :3] = body.xmat.reshape(3, 3)
+            else:
+                physical_pose = self.env.data.joint(name).qpos.copy()
+                physical_matrix = pose_matrix(physical_pose[[0, 1, 2, 4, 5, 6, 3]])
+            object_poses[name] = matrix_pose(self.env.adapter.world_transform @ physical_matrix).tolist()
         request = {
             "sequence": self.sequence,
             "simulation_time": float(self.env.data.time),
-            "ball_pose_xyzw": ball.tolist(),
+            "object_name": self.object_name,
+            "object_pose_xyzw": object_poses[self.object_name],
+            "object_poses_xyzw": object_poses,
             "policy_state": state.tolist(),
             "joint_positions": {
                 side: [float(self.env.data.joint(f"joint{i}_{side}").qpos[0])
@@ -99,6 +121,8 @@ class NativeObservationRenderer:
                        for finger in ("left", "right")] for side in ("left", "right")},
             "world_from_policy": np.linalg.inv(self.env.adapter.world_transform).tolist(),
         }
+        if self.object_name == "ball":
+            request["ball_pose_xyzw"] = object_poses["ball"]
         request_path = self.output_dir / f"request_{self.sequence:04d}.json"
         response_path = self.output_dir / f"response_{self.sequence:04d}.json"
         response_path.unlink(missing_ok=True)

@@ -2,7 +2,7 @@
 
 This is a separate observation model. It never advances physics or changes the
 physical task. Before each render, the current physical TCPs, finger openings
-and ball pose are transferred to the source visual model. The different source
+and task object poses are transferred to the source visual model. The different source
 arm geometry is fitted to the actual TCPs using bounded inverse kinematics.
 
 Run scripts/mujoco/export_source_visuals.py once to prepare the native meshes,
@@ -39,6 +39,16 @@ def _pose_attributes(matrix):
 def _objects(manifest):
     records = manifest["objects"]
     return records if isinstance(records, dict) else {record["name"]: record for record in records}
+
+
+def task_object_names(manifest):
+    """Old ball exports have no task metadata; all new exports name each body."""
+    task = manifest.get("task", {})
+    names = [task.get("object_name", "ball"), *task.get("additional_object_names", []),
+             *task.get("static_object_names", [])]
+    if len(set(names)) != len(names):
+        raise ValueError(f"Repeated source task object names: {names}")
+    return names
 
 
 def _world(record):
@@ -104,6 +114,10 @@ def build_source_visual_scene(manifest_path, output_path):
     manifest_path, output_path = Path(manifest_path).resolve(), Path(output_path).resolve()
     manifest = json.loads(manifest_path.read_text())
     objects, root_dir = _objects(manifest), manifest_path.parent
+    movable_objects = task_object_names(manifest)
+    missing = set(movable_objects) - objects.keys()
+    if missing:
+        raise ValueError(f"Source manifest lacks task objects: {sorted(missing)}")
     root = ET.Element("mujoco", model="peract2_source_visuals")
     ET.SubElement(root, "compiler", angle="radian", fusestatic="false", autolimits="true", inertiafromgeom="false")
     ET.SubElement(root, "option", gravity="0 0 0")
@@ -152,9 +166,9 @@ def build_source_visual_scene(manifest_path, output_path):
 
     children = {}
     for name, record in objects.items():
-        # Ball has a free joint in a top-level body so its pose can be copied
-        # directly from physical MuJoCo regardless of the task root transform.
-        parent = None if name == "ball" else record.get("parent")
+        # Each synchronized object has an independent rendering-only free
+        # joint. This includes static supports randomized by the task reset.
+        parent = None if name in movable_objects else record.get("parent")
         if parent not in objects:
             parent = None
         children.setdefault(parent, []).append(name)
@@ -165,8 +179,8 @@ def build_source_visual_scene(manifest_path, output_path):
                      else np.asarray(record["local_matrix"], float))
         body = ET.SubElement(parent_element, "body", name=name, **_pose_attributes(transform))
         ET.SubElement(body, "inertial", pos="0 0 0", mass="0.001", diaginertia="0.000001 0.000001 0.000001")
-        if name == "ball":
-            ET.SubElement(body, "freejoint", name="source_ball")
+        if name in movable_objects:
+            ET.SubElement(body, "freejoint", name=f"source_{name}")
         elif "joint" in record:
             subtype = str(record["joint"].get("subtype", "revolute")).lower()
             slide = "prismatic" in subtype or subtype == "11"
@@ -211,6 +225,14 @@ class SourceVisualObservationRenderer:
                 "Run scripts/mujoco/export_source_visuals.py first.")
         self.manifest = json.loads(self.manifest_path.read_text())
         self.objects = _objects(self.manifest)
+        self.object_names = task_object_names(self.manifest)
+        self.object_name = env.config.get("object_name", "ball")
+        self.static_object_names = env.config.get("static_object_names", [])
+        physical_objects = [self.object_name, *env.config.get("additional_object_names", []),
+                            *self.static_object_names]
+        if self.object_names != physical_objects:
+            raise ValueError(f"Source visual objects {self.object_names} do not match "
+                             f"the physical task objects {physical_objects}; choose the task's visual assets")
         self.xml_path = (Path(output_dir).resolve() / "source_visual_scene.xml" if output_dir
                          else self.assets_dir / "source_visual_scene.xml")
         build_source_visual_scene(self.manifest_path, self.xml_path)
@@ -235,10 +257,20 @@ class SourceVisualObservationRenderer:
                 name = f"Panda_{side}Arm_gripper_joint{number}"
                 limits = _joint_limits(self.objects[name])
                 self.data.joint(name).qpos[0] = np.clip(opening, *limits)
-        physical_ball = self.env.data.joint("ball").qpos
-        world_ball = self.env.adapter.world_transform @ pose_matrix(physical_ball[[0, 1, 2, 4, 5, 6, 3]])
-        source_ball = matrix_pose(world_ball)
-        self.data.joint("source_ball").qpos[:] = source_ball[[0, 1, 2, 6, 3, 4, 5]]
+        object_poses = {}
+        for name in self.object_names:
+            if name in self.static_object_names:
+                body = self.env.data.body(name)
+                physical_matrix = np.eye(4)
+                physical_matrix[:3, 3] = body.xpos
+                physical_matrix[:3, :3] = body.xmat.reshape(3, 3)
+            else:
+                physical_pose = self.env.data.joint(name).qpos
+                physical_matrix = pose_matrix(physical_pose[[0, 1, 2, 4, 5, 6, 3]])
+            world_pose = self.env.adapter.world_transform @ physical_matrix
+            source_pose = matrix_pose(world_pose)
+            self.data.joint(f"source_{name}").qpos[:] = source_pose[[0, 1, 2, 6, 3, 4, 5]]
+            object_poses[name] = source_pose.tolist()
         for name, calibration in self.calibration.items():
             camera = np.asarray(calibration["matrix"], float)
             if name != "front":
@@ -252,10 +284,13 @@ class SourceVisualObservationRenderer:
         self.last_metadata = {
             "renderer": "source_mujoco", "physics": "unchanged_physical_mujoco_environment",
             "manifest": str(self.manifest_path), "manifest_sha256": self.manifest_sha256,
-            "robot_alignment": alignment, "ball_pose_xyzw": source_ball.tolist(),
+            "robot_alignment": alignment, "object_name": self.object_name,
+            "object_pose_xyzw": object_poses[self.object_name], "object_poses_xyzw": object_poses,
             "state_source": "actual_physical_mujoco_tcp_and_finger_positions",
             "camera_source": "authored_source_mounts_attached_to_actual_physical_tcp",
         }
+        if self.object_name == "ball":
+            self.last_metadata["ball_pose_xyzw"] = object_poses["ball"]
         return state
 
     def observe(self):
