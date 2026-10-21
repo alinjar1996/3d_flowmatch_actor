@@ -44,6 +44,7 @@ test*
 !tests/test_scene_settings.py
 !tests/test_initial_states.py
 !tests/test_randomized_reset.py
+!tests/test_seed_sweep.py
 .venv/
 runtime/
 bdp

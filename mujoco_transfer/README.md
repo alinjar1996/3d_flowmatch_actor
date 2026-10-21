@@ -6,6 +6,11 @@ It renders RGB-D, predicts absolute Cartesian keyposes, and executes them
 through differential IK and MuJoCo position actuators. No ROS, RLBench,
 PyRep, or CoppeliaSim installation is required.
 
+For the exact code path, tensor shapes, and model-to-controller flow, see
+[INFERENCE_PIPELINE.md](INFERENCE_PIPELINE.md).
+For the resumable 101-run batch over reset seeds 0–100, see
+[SEED_SWEEP.md](SEED_SWEEP.md).
+
 **The integration is runnable; successful zero-shot ball lifting is not
 established.** Loading weights and moving the arms are separate from solving
 the task. Videos and JSON reports record the actual result, including controller
@@ -378,6 +383,14 @@ conventions. The supplied observation NPZs are diagnostics, not a complete
 demonstration-training dataset.
 
 ## Verification
+
+The initial 101-reset-seed policy sweep achieved 0 successes. The subsequent
+[failure investigation](DIAGNOSIS.md) found a substantial visual-input mismatch:
+native source observations reduced first-target error from 20.9 cm to 1.87 cm
+in four controlled cases. Expert keyposes lifted successfully in six MuJoCo
+controls using the unchanged controller. The diagnosis includes causal
+ablations, execution limitations and labeled four-view videos; scene-settings
+verification alone does not establish a successful checkpoint transfer.
 
 ```bash
 .venv/bin/python -m mujoco_transfer.verify_settings
