@@ -1,6 +1,6 @@
 # 3DFA checkpoint inference in MuJoCo
 
-The rollout calls inference at [run.py:162](run.py#L162):
+The rollout calls inference in [run.main(), run.py](run.py):
 
 ```python
 action = policy.predict(rgb, points, state)
@@ -27,6 +27,7 @@ From `/home/aks-lab/3dfa/3d_flowmatch_actor`:
 ```bash
 # CUDA inference, randomized source start, four synchronized video angles.
 PYTHONPATH= bash scripts/mujoco/rollout.sh \
+  --observation-renderer source_mujoco \
   --randomize --reset-seed 42 --steps 25 --video-view all
 ```
 
@@ -39,7 +40,7 @@ To inspect a prediction without executing it:
 
 ```bash
 PYTHONPATH= .venv/bin/python -m mujoco_transfer.run \
-  --mode infer --device cuda --episode 8
+  --mode infer --device cuda --episode 8 --observation-renderer source_mujoco
 ```
 
 `observe` saves camera inputs and state without loading the actor.
@@ -83,6 +84,8 @@ The three policy cameras supply model inputs. The four observer views in
 | Checkpoint loading | [load_actor(), policy.py:51](policy.py#L51) | Builds the matching architecture, loads weights strictly, and moves the actor to the requested device. |
 | Instruction/history reset | [FlowMatchPolicy.reset(), policy.py:112](policy.py#L112) | Tokenizes the instruction and clears observation history. |
 | Observation | [ObservationAdapter.observe(), environment.py:69](environment.py#L69) | Renders RGB and metric depth, reconstructs XYZ, and returns gripper state. |
+| Source appearance, MuJoCo only | [SourceVisualObservationRenderer.observe()](source_visual_renderer.py) | Synchronizes exported source visual assets to actual physical state and renders matching RGB/XYZ. |
+| Native appearance bridge | [NativeObservationRenderer.observe()](native_renderer.py) | Renders actual physical state in an isolated source-simulator worker, without stepping source physics. |
 | Inference adapter | [FlowMatchPolicy.predict(), policy.py:121](policy.py#L121) | Builds batched tensors and calls the pretrained actor. |
 | Model inference branch | [DenoiseActor.forward(), base_denoise_actor.py:317](../modeling/policy/base_denoise_actor.py#L317) | Dispatches `run_inference=True` to `compute_trajectory()`. |
 | Flow sampling | [compute_trajectory(), base_denoise_actor.py:148](../modeling/policy/base_denoise_actor.py#L148) | Encodes observations, samples a latent action, and produces the final keyposes. |
@@ -105,8 +108,8 @@ Panda branch assets and adds actuators, finger sliders, and cameras.
 [reference.calibrate_reference()](reference.py#L114) applies the source base
 poses, ball settings, camera calibration, and fitted TCP corrections.
 
-At run time, [run.py:78](run.py#L78) checks the prepared scene. For randomized
-starts, [run.py:89](run.py#L89) creates `SourceEpisodeSampler`; the environment
+At run time, [run.main()](run.py) checks the prepared scene. For randomized
+starts, it creates `SourceEpisodeSampler`; the environment
 applies the selected start, and [verify_initial_state()](verify_settings.py#L167)
 checks the resulting ball pose, joint positions, grippers, actuator commands,
 zero velocities, and simulation time.
@@ -150,7 +153,16 @@ No optimizer, backward pass, or weight update runs in this inference path.
 
 ## 3. Build observations
 
-[ObservationAdapter.observe()](environment.py#L69) renders cameras in this order:
+The loop calls `observation_renderer.observe()`. Select `source_mujoco` for
+source appearance rendered entirely with MuJoCo, or `source_native` for the
+live native rendering bridge. Both use the current physical ball pose and
+actual TCPs on every policy step; no subsequent demonstration observations or
+actions enter the loop. Physical control and checkpoint inference are shared.
+See [RENDERING_TRANSFER.md](RENDERING_TRANSFER.md) for the tested pipeline and
+the distinction between the physical robot and synchronized visual model.
+
+The retained `mujoco` baseline calls
+[ObservationAdapter.observe()](environment.py#L69), which renders cameras in this order:
 `front`, `wrist_left`, `wrist_right`, each at 256×256.
 It unprojects metric depth using
 [depth_to_world()](geometry.py#L40), then applies `T_policy_from_mujoco`.
@@ -236,7 +248,7 @@ aggregates the resulting reports.
 
 ## 5. Execute the predicted keyposes
 
-[run.py:181](run.py#L181) calls:
+[run.main()](run.py) calls:
 
 ```python
 entry["controller"] = env.controller.execute(action, callback)
@@ -272,6 +284,12 @@ During execution, the callback checks whether ball centre world height reaches
 The success flag records whether the threshold has been reached. The outer
 loop stops after the controller returns on success, controller timeout,
 viewer closure, or the policy-step limit.
+
+This adapter latches a threshold crossing during the action, even if the ball
+falls before the action finishes. Check the final `steps[-1].ball_height_m`
+as well as `task_success`; crossing the threshold alone does not establish
+sustained holding. The renderer pilot's two measurements are reported in
+[RENDERING_TRANSFER.md](RENDERING_TRANSFER.md).
 
 Each output folder contains:
 

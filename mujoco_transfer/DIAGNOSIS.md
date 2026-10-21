@@ -1,5 +1,13 @@
 # Why the pretrained policy did not lift in the MuJoCo sweep
 
+Follow-up: the observation fixes described in [RENDERING_TRANSFER.md](RENDERING_TRANSFER.md)
+now produce **10/10 full policy rollouts crossing the source lift height** in
+both the native rendering bridge and the MuJoCo-only source-appearance mode
+on the selected ten distinct starts. At the final action's end, 7/10 native
+and 5/10 MuJoCo-rendered runs remained above the goal; the other runs had
+dropped the ball. The diagnostic results below describe the preserved
+original baseline and the experiments that identified its failure.
+
 The robot **can lift the ball in the current MuJoCo setup**. The strongest
 identified problem is the policy's transferred visual input: the unchanged
 checkpoint predicts a substantially different, unsuitable approach from the

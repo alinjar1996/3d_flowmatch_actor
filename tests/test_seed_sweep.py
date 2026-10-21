@@ -355,3 +355,27 @@ def test_fingerprint_detects_nested_scene_asset_changes(tmp_path):
     changed = sweep.fingerprint(args)
     assert changed != original
     assert changed["input_sha256"][str(mesh.resolve())] != original["input_sha256"][str(mesh.resolve())]
+
+
+def test_source_visual_texture_change_invalidates_sweep_fingerprint(tmp_path):
+    arguments = ["--observation-renderer", "source_mujoco"]
+    for flag in ("scene", "config", "checkpoint", "reference-archive"):
+        path = tmp_path / "physical" / flag
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"unchanged physical input")
+        arguments.extend([f"--{flag}", str(path)])
+    assets = tmp_path / "visuals"
+    assets.mkdir()
+    (assets / "table.obj").write_text("source visual mesh")
+    texture = assets / "wood.png"
+    texture.write_bytes(b"original texture")
+    (assets / "manifest.json").write_text(json.dumps({"objects": [{"meshes": [
+        {"obj_path": "table.obj", "material": {"texture_path": "wood.png"}}
+    ]}]}))
+    arguments.extend(["--source-visual-assets", str(assets)])
+    args = sweep.build_parser().parse_args(arguments)
+    original = sweep.fingerprint(args)
+    texture.write_bytes(b"different visual input")
+    changed = sweep.fingerprint(args)
+    assert changed != original
+    assert changed["input_sha256"][str(texture)] != original["input_sha256"][str(texture)]

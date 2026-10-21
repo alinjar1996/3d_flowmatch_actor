@@ -41,6 +41,12 @@ def build_parser():
                         default="all")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--observation-renderer", choices=("mujoco", "source_native", "source_mujoco"),
+                        default="mujoco")
+    parser.add_argument("--source-visual-assets", type=Path, default=Path("runtime/source_visuals"))
+    parser.add_argument("--source-scene-root", type=Path, default=Path("runtime/source-audit/RLBench"))
+    parser.add_argument("--coppeliasim-root", type=Path,
+                        default=Path("runtime/source-audit/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04"))
     parser.add_argument("--resume", action="store_true", help="Skip existing valid results and errors")
     parser.add_argument("--retry-errors", action="store_true",
                         help="With --resume, retry execution errors in a new attempt directory")
@@ -61,6 +67,10 @@ def command_for_seed(args, seed, output):
         "--device", args.device, "--threads", str(args.threads), "--steps", str(args.steps),
         "--video-view", args.video_view, "--randomize", "--reset-seed", str(seed),
         "--seed", str(policy_seed_for(args, seed)), "--output", str(output),
+        "--observation-renderer", args.observation_renderer,
+        "--source-visual-assets", str(args.source_visual_assets),
+        "--source-scene-root", str(args.source_scene_root),
+        "--coppeliasim-root", str(args.coppeliasim_root),
     ]
 
 
@@ -89,6 +99,23 @@ def fingerprint(args):
     model_suffixes = {".xml", ".stl", ".obj", ".ply", ".msh", ".png", ".jpg", ".jpeg"}
     inputs.update(path.resolve() for path in args.scene.parent.rglob("*")
                   if path.is_file() and path.suffix.lower() in model_suffixes)
+    if args.observation_renderer == "source_native":
+        inputs.update((args.source_scene_root / path).resolve() for path in
+                      ("rlbench/task_design_bimanual.ttt", "rlbench/task_ttms/bimanual_lift_ball.ttm"))
+        inputs.add((args.coppeliasim_root / "libcoppeliaSim.so").resolve())
+    elif args.observation_renderer == "source_mujoco":
+        manifest_path = args.source_visual_assets / "manifest.json"
+        inputs.add(manifest_path.resolve())
+        manifest = json.loads(manifest_path.read_text())
+        records = manifest["objects"]
+        if isinstance(records, dict):
+            records = records.values()
+        for record in records:
+            for component in record.get("meshes", []):
+                inputs.add((args.source_visual_assets / component["obj_path"]).resolve())
+                texture = component.get("material", {}).get("texture_path")
+                if texture:
+                    inputs.add((args.source_visual_assets / texture).resolve())
     package_root = Path(__file__).resolve().parent.parent
     for directory in ("mujoco_transfer", "modeling", "utils"):
         inputs.update(path.resolve() for path in (package_root / directory).rglob("*.py"))
@@ -109,6 +136,14 @@ def preflight(args):
             raise ValueError(f"Missing {key.replace('_', ' ')}: {path}")
     if not shutil.which("ffmpeg"):
         raise ValueError("ffmpeg is required to save the rollout videos")
+    if args.observation_renderer == "source_mujoco" and not (args.source_visual_assets / "manifest.json").is_file():
+        raise ValueError("Missing source visual export; run scripts/mujoco/export_source_visuals.py first")
+    if args.observation_renderer == "source_native":
+        for path in (args.source_scene_root / "rlbench/task_design_bimanual.ttt",
+                     args.source_scene_root / "rlbench/task_ttms/bimanual_lift_ball.ttm",
+                     args.coppeliasim_root / "libcoppeliaSim.so"):
+            if not path.is_file():
+                raise ValueError(f"Missing native renderer dependency: {path}")
 
 
 def empty_row(seed, policy_seed):

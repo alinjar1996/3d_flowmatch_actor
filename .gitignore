@@ -45,6 +45,11 @@ test*
 !tests/test_initial_states.py
 !tests/test_randomized_reset.py
 !tests/test_seed_sweep.py
+!tests/test_observation_renderers.py
+!tests/test_source_kinematics.py
+!tests/test_source_visual_renderer.py
+!tests/fixtures/
+!tests/fixtures/source_arm_kinematics.json
 .venv/
 runtime/
 bdp

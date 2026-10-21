@@ -3,40 +3,48 @@
 This bridge runs the released **PerAct2 dual-Panda checkpoint** on the ball
 task exported from `manipulator_mujoco` branch `origin/issue_38_lift_ball_panda`.
 It renders RGB-D, predicts absolute Cartesian keyposes, and executes them
-through differential IK and MuJoCo position actuators. No ROS, RLBench,
-PyRep, or CoppeliaSim installation is required.
+through differential IK and MuJoCo position actuators. The `source_mujoco`
+observation mode uses exported source visual assets and needs no running
+CoppeliaSim or PyRep during inference. Exporting those assets once requires
+the source-audit installation already prepared on this machine.
 
 For the exact code path, tensor shapes, and model-to-controller flow, see
 [INFERENCE_PIPELINE.md](INFERENCE_PIPELINE.md).
 For the resumable 101-run batch over reset seeds 0–100, see
 [SEED_SWEEP.md](SEED_SWEEP.md).
+For the successful observation-transfer setup, preparation and renderer
+comparison, see [RENDERING_TRANSFER.md](RENDERING_TRANSFER.md).
 
-**The integration is runnable; successful zero-shot ball lifting is not
-established.** Loading weights and moving the arms are separate from solving
-the task. Videos and JSON reports record the actual result, including controller
-timeouts. Base poses, ball starting pose, radius, mass, and task success
-threshold now match the source settings described below. Internal arm
-kinematics, finger collision shapes, and contact dynamics still differ.
+**The unchanged checkpoint now reaches the source lift height on all ten
+tested distinct starting states with `source_mujoco`, and 10/10 with the
+native rendering bridge.** Each run uses fresh observations of actual MuJoCo state; expert
+trajectories are not replayed. See the [MuJoCo-only evaluation summary](../runtime/rendering_transfer/mujoco_eval_10_v1/summary.json)
+and [four-view episode 94 video](../runtime/rendering_transfer/mujoco_eval_10_v1/source_mujoco/episode_094/rollout.mp4).
+This is a ten-episode pilot using the original `ball z >= 0.95 m` criterion,
+not a completed new 101-seed sweep or a sustained-holding benchmark. Some runs
+then dropped the ball: **5/10 MuJoCo-rendered and 7/10 native-rendered runs
+remained above the goal at the final action's end**. See the
+[per-run height validation](../runtime/rendering_transfer/validation.json).
 
-The latest recording using those settings shows four synchronized angles:
-[`runtime/video-multiple-angles-framed/rollout.mp4`](../runtime/video-multiple-angles-framed/rollout.mp4),
-with [its report](../runtime/video-multiple-angles-framed/report.json). Earlier
-`video-reference*` recordings used an approximate scene and are retained only
-as diagnostics; they do not demonstrate the corrected source settings.
-The new run reached the first predicted keypose, timed out on the second, and
-did not lift the ball. The 19.72-second video records the result. Inference
-took 0.228s initially and 0.029s on the next call on an RTX 4090.
+The original branch-camera baseline remains available as `--observation-renderer
+mujoco` and retains its earlier 0/101 result. Its images differ substantially
+from the checkpoint's source images; see [DIAGNOSIS.md](DIAGNOSIS.md).
+Physical base/ball settings and the original controller are unchanged by the
+new rendering modes. The physical branch and source visual robot still have
+different internal kinematics; the visual source hands are aligned to actual
+physical TCPs at every observation.
 
 ## Run the prepared setup
 
 From the repository root:
 
 ```bash
-bash scripts/mujoco/rollout.sh --steps 25
+PYTHONPATH= bash scripts/mujoco/rollout.sh \
+  --observation-renderer source_mujoco --episode 94 --steps 25
 ```
 
 This uses the local `.venv`, CUDA, the downloaded checkpoint, and the source
-scene settings. It verifies the loaded scene against the extracted source
+scene settings and source visual assets. It verifies the loaded scene against the extracted source
 fixture and released demonstration before inference. Every rollout writes:
 
 - `runtime/runs/<timestamp>/rollout.mp4`: synchronized 1280×960 video with
@@ -45,9 +53,15 @@ fixture and released demonstration before inference. Every rollout writes:
   display each new target and the final result.
 - `cameras_*.png`: front, left wrist, right wrist input images.
 - `observation_*.npz`: uint8 RGB, policy-frame point clouds, gripper states,
-  and simulation joint positions.
+  simulation joint positions, velocities and actuator targets.
 - `report.json`: checkpoint hash, source branch/commit, settings verification,
-  calibration details, raw predictions, inference time, pose errors, and task outcome.
+  calibration details, renderer alignment, raw predictions, inference time,
+  pose errors, maximum ball height and task outcome.
+
+The renderer defaults to the retained branch-camera baseline. Include
+`--observation-renderer source_mujoco` in the additional example commands below
+to use the successful source-appearance path. Assets are already exported;
+`bash scripts/mujoco/prepare_visuals.sh` reproduces their preparation.
 
 `ffmpeg` must be on PATH. Use `--no-video` to disable recording, `--device cpu`
 for CPU inference, or `--output runtime/my-new-run` for a named output directory.
@@ -413,9 +427,11 @@ Other checks cover camera projection, nontrivial world/TCP round trips, arm orde
 history/reset semantics, strict checkpoint parity, physical Cartesian motion,
 gripper polarity, and unreachable-target reporting. Clearing `PYTHONPATH` and
 disabling pytest plugin autoload prevent an already-sourced ROS installation
-from injecting unrelated test plugins. All 43 tests passed locally, including
-the actual renderer, checkpoint, generated-scene integration, paired source
-reset selection, RNG isolation, reset verification, and state restoration checks.
+from injecting unrelated test plugins. The complete suite now passes 92 tests,
+including the actual checkpoint, both source-appearance renderers,
+generated-scene integration, paired source reset selection, RNG isolation,
+reset verification and state restoration. The complete-suite command and
+renderer checks are in [RENDERING_TRANSFER.md](RENDERING_TRANSFER.md).
 
 Sources: [checkpoint and test metadata](https://huggingface.co/katefgroup/3d_flowmatch_actor/tree/main),
 [actor evaluation configuration](../online_evaluation_rlbench/eval_peract2.sh),

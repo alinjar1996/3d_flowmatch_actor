@@ -5,6 +5,28 @@ prepared Panda ball task and pretrained CUDA policy. Each run samples a
 released source initial state with its reset seed and records a four-angle
 video. Runs execute sequentially on one GPU.
 
+## Use the corrected observations
+
+The source-appearance mode is explicitly selected with
+`--observation-renderer source_mujoco`. All ten pilot episodes crossed the
+source goal height; five still exceeded it at the final action's end.
+The existing `task_success` flag records any crossing during execution, so
+also inspect final heights when assessing stable lifting. The full 101-seed
+sweep is prepared for you to run:
+
+```bash
+cd /home/aks-lab/3dfa/3d_flowmatch_actor
+PYTHONPATH= bash scripts/mujoco/sweep.sh \
+  --observation-renderer source_mujoco \
+  --output runtime/seed_sweeps/source_visuals_000_100
+```
+
+Use the same arguments plus `--resume` when resuming. The original result
+directory is preserved. Omitting the renderer option retains the original
+branch-camera baseline; the commands below describe that backward-compatible
+default. Both modes use identical physical reset randomization, checkpoint
+and controller. Renderer assets are included in the resume fingerprint.
+
 ## Start the batch
 
 ```bash

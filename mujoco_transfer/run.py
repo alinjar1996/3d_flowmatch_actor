@@ -1,6 +1,7 @@
 """Render, infer, and execute the pretrained PerAct2 policy in MuJoCo."""
 
 import argparse
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
 import os
@@ -43,6 +44,11 @@ def main():
                         help="Saved camera view: all gives a synchronized 2x2 grid; "
                              "fixed views also set the initial live-view angle")
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--observation-renderer", choices=("mujoco", "source_native", "source_mujoco"),
+                        default="mujoco", help="Camera renderer; physics always runs in MuJoCo")
+    parser.add_argument("--source-visual-assets", type=Path, default=Path("runtime/source_visuals"))
+    parser.add_argument("--source-scene-root", type=Path)
+    parser.add_argument("--coppeliasim-root", type=Path)
     args = parser.parse_args()
     if args.steps < 1:
         parser.error("--steps must be positive")
@@ -67,13 +73,21 @@ def main():
     report = {
         "mode": args.mode, "device": args.device, "seed": args.seed,
         "instruction": instruction, "config": config, "steps": [],
-        "task_success_validated": False,
+        "source_success_criterion_verified": False,
         "metric": (config.get("success_condition") or config.get("success_proxy")),
+        "observation_renderer": args.observation_renderer,
+        "physics_backend": "mujoco",
+        "implementation_sha256": {
+            name: sha256(Path(__file__).parent / name) for name in (
+                "environment.py", "policy.py", "run.py", "source_kinematics.py",
+                "native_renderer.py", "native_worker.py", "source_visual_renderer.py")
+            if (Path(__file__).parent / name).is_file()},
     }
     manifest = args.scene.parent / "source.json"
     if manifest.exists():
         report["scene_source"] = json.loads(manifest.read_text())
-    env, viewer, video = None, None, None
+    env, viewer, video, observation_renderer = None, None, None, None
+    resources = ExitStack()
     try:
         if "scene_settings" in config:
             from .verify_settings import verify_settings
@@ -84,6 +98,7 @@ def main():
             if not verification["passed"]:
                 failed = [c["name"] for c in verification["checks"] if not c["passed"]]
                 raise ValueError(f"Source scene settings mismatch: {failed}")
+            report["source_success_criterion_verified"] = True
             print("Source scene settings verified against native scene and released demo", flush=True)
         initial_state, reset_sampler = None, None
         if args.randomize or args.episode is not None:
@@ -96,6 +111,7 @@ def main():
                 initial_state = sampler.sample(episode=args.episode)
         env = PandaBallEnvironment(
             args.scene, config, initial_state=initial_state, reset_sampler=reset_sampler)
+        resources.callback(env.close)
         if env.initial_state is not None:
             from .verify_settings import verify_initial_state
             report["initial_state"] = env.initial_state
@@ -108,10 +124,24 @@ def main():
             print(f"Source reset: episode {state['episode']} | selection={state['selection']} "
                   f"| reset seed={state['seed']} | ball XYZ={state['ball_pose_xyzw'][:3]}",
                   flush=True)
+        if args.observation_renderer == "source_native":
+            from .native_renderer import NativeObservationRenderer
+            observation_renderer = NativeObservationRenderer(
+                env, output / "source_renderer", source_root=args.source_scene_root,
+                coppelia_root=args.coppeliasim_root, archive=args.reference_archive)
+        elif args.observation_renderer == "source_mujoco":
+            from .source_visual_renderer import SourceVisualObservationRenderer
+            observation_renderer = SourceVisualObservationRenderer(
+                env, assets_dir=args.source_visual_assets, output_dir=output / "source_renderer")
+        else:
+            observation_renderer = env.adapter
+        if observation_renderer is not env.adapter:
+            resources.callback(observation_renderer.close)
         if args.mode == "rollout" and not args.no_video:
             from .video import RolloutVideo
             video = RolloutVideo(env, output / "rollout.mp4", view=args.video_view)
-            label = "Initial observation | pretrained 3DFA"
+            resources.callback(video.close)
+            label = f"Initial observation | pretrained 3DFA | {args.observation_renderer}"
             if env.initial_state is not None:
                 label += f" | source episode {env.initial_state['episode']}"
             video.hold(label, seconds=1)
@@ -122,6 +152,7 @@ def main():
             import mujoco.viewer
             from .video import make_camera
             viewer = mujoco.viewer.launch_passive(env.model, env.data)
+            resources.callback(viewer.close)
             camera = make_camera(
                 env, args.video_view if args.video_view not in ("all", "orbit") else "overview")
             with viewer.lock():
@@ -146,14 +177,27 @@ def main():
             print(f"Loaded {len(policy.actor.state_dict())} tensors strictly; "
                   f"migrated {len(policy.actor.legacy_unused_checkpoint_keys)} unused legacy tensors",
                   flush=True)
+        maximum_ball_height = float(env.data.joint("ball").qpos[2])
+        longest_goal_duration = goal_duration = 0.0
+        observation_reports = []
+        report["observations"] = observation_reports
         for step in range(args.steps if args.mode == "rollout" else 1):
             if viewer and not viewer.is_running():
                 report["stop_reason"] = "viewer_closed"
                 break
-            rgb, points, state = env.adapter.observe()
+            observation_start = time.perf_counter()
+            rgb, points, state = observation_renderer.observe()
+            observation_report = {
+                "step": step, "renderer": args.observation_renderer,
+                "seconds": time.perf_counter() - observation_start,
+                "simulation_time": float(env.data.time),
+                "alignment": getattr(observation_renderer, "last_metadata", {}),
+            }
+            observation_reports.append(observation_report)
             np.savez_compressed(output / f"observation_{step:03d}.npz",
                                 rgb=rgb, points=points, state=state,
-                                qpos=env.data.qpos.copy())
+                                qpos=env.data.qpos.copy(), qvel=env.data.qvel.copy(),
+                                ctrl=env.data.ctrl.copy())
             Image.fromarray(np.concatenate(list(rgb), axis=1)).save(output / f"cameras_{step:03d}.png")
             if args.mode == "observe":
                 report["stop_reason"] = "observation_saved"
@@ -171,9 +215,17 @@ def main():
                 break
             if video:
                 video.set_action(action, step)
+                video.label += f" | {args.observation_renderer}"
                 video.hold(video.label, seconds=0.5)
             def callback():
+                nonlocal maximum_ball_height, goal_duration, longest_goal_duration
                 env.track_success()
+                height = float(env.data.joint("ball").qpos[2])
+                maximum_ball_height = max(maximum_ball_height, height)
+                goal = config.get("success_condition", {}).get("minimum_height_m")
+                if goal is not None:
+                    goal_duration = goal_duration + env.model.opt.timestep if height >= goal else 0.0
+                    longest_goal_duration = max(longest_goal_duration, goal_duration)
                 if video:
                     video.capture()
                 if viewer:
@@ -182,6 +234,7 @@ def main():
             entry["state_after_action"] = env.adapter.state().tolist()
             entry["ball_height_m"] = float(env.data.body("ball").xpos[2])
             entry["task_success"] = bool(env.success)
+            entry["maximum_ball_height_m"] = maximum_ball_height
             if env.success:
                 report["stop_reason"] = "task_success"
                 break
@@ -190,19 +243,19 @@ def main():
                 break
         report.setdefault("stop_reason", "step_limit")
         report["task_success"] = bool(env.success)
+        report["maximum_ball_height_m"] = maximum_ball_height
+        report["longest_goal_duration_s"] = longest_goal_duration
+        report["goal_duration_note"] = "Measured during executed actions; no extra holding phase."
         if video:
             video.hold(f"Result: {report['stop_reason']} | task success: {env.success}", seconds=2)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-        if viewer:
-            viewer.close()
-        if video:
-            video.close()
-        if env:
-            env.close()
+        # ExitStack releases every resource even if report writing or another
+        # cleanup callback fails, including the isolated native renderer.
+        with resources:
+            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         print(f"Run artifacts: {output}", flush=True)
 
 
