@@ -137,6 +137,9 @@ def main():
             observation_renderer = env.adapter
         if observation_renderer is not env.adapter:
             resources.callback(observation_renderer.close)
+        from .video import make_ball_goal_marker
+        goal_marker = make_ball_goal_marker(env)
+        report["ball_goal_marker"] = goal_marker
         if args.mode == "rollout" and not args.no_video:
             from .video import RolloutVideo
             video = RolloutVideo(env, output / "rollout.mp4", view=args.video_view)
@@ -150,7 +153,7 @@ def main():
             report["video_settings"] = video.settings
         if args.viewer:
             import mujoco.viewer
-            from .video import make_camera
+            from .video import add_ball_goal_marker, make_camera
             viewer = mujoco.viewer.launch_passive(env.model, env.data)
             resources.callback(viewer.close)
             camera = make_camera(
@@ -161,6 +164,7 @@ def main():
                 viewer.cam.distance = camera.distance
                 viewer.cam.azimuth = camera.azimuth
                 viewer.cam.elevation = camera.elevation
+                add_ball_goal_marker(viewer.user_scn, goal_marker)
             viewer.sync()
             print("Live camera: left-drag to rotate, right-drag to pan, scroll to zoom", flush=True)
         print(f"Calibration: {config['calibration_status']}", flush=True)

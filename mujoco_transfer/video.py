@@ -1,4 +1,4 @@
-"""Record physical simulation frames and predicted Cartesian target markers."""
+"""Record simulation frames with observer-only goal and action markers."""
 
 import shutil
 import subprocess
@@ -18,6 +18,46 @@ VIEW_PRESETS = {
 VIDEO_VIEWS = ("all", *VIEW_PRESETS, "orbit")
 ORBIT_DEGREES_PER_SECOND = 15.0
 TILE_WIDTH, TILE_HEIGHT = 640, 480
+
+
+def make_ball_goal_marker(env):
+    """A fixed lift-height reference, not a physical or policy-camera object.
+
+    The source goal constrains height only. Initial ball XY anchors the visual
+    reference without imposing a new XY target or a cube-containment condition.
+    """
+    condition = env.config.get("success_condition")
+    if condition is not None:
+        if condition["kind"] != "world_height":
+            return None
+        height = condition["minimum_height_m"]
+    else:
+        proxy = env.config.get("success_proxy")
+        if proxy is None:
+            return None
+        height = env.initial_ball_height + proxy["ball_rise_metres"]
+    center = env.data.joint("ball").qpos[:3].copy()
+    center[2] = height
+    return {
+        "shape": "box",
+        "center_world_m": center.tolist(),
+        "half_size_m": [0.1, 0.1, 0.1],
+        "rgba": [0.85, 0.85, 0.85, 0.25],
+        "meaning": "Cube center marks goal height; XY is the initial ball position, "
+                   "not a task constraint. Observer only; no physics or policy input.",
+    }
+
+
+def add_ball_goal_marker(scene, marker):
+    """Append the same translucent cube to video scenes or viewer.user_scn."""
+    if marker is None or scene.ngeom >= scene.maxgeom:
+        return
+    geom = scene.geoms[scene.ngeom]
+    mujoco.mjv_initGeom(
+        geom, mujoco.mjtGeom.mjGEOM_BOX, marker["half_size_m"],
+        marker["center_world_m"], np.eye(3).ravel(), marker["rgba"])
+    geom.category = mujoco.mjtCatBit.mjCAT_DECOR
+    scene.ngeom += 1
 
 
 def make_camera(env, view="overview"):
@@ -52,6 +92,7 @@ class RolloutVideo:
         self.width = TILE_WIDTH * (2 if view == "all" else 1)
         self.height = TILE_HEIGHT * (2 if view == "all" else 1)
         self.camera = make_camera(env, view)
+        self.goal_marker = make_ball_goal_marker(env)
         self.start_time = float(env.data.time)
         self.closed = False
         self.renderer = mujoco.Renderer(env.model, height=TILE_HEIGHT, width=TILE_WIDTH)
@@ -87,6 +128,7 @@ class RolloutVideo:
             "fps": self.fps,
             "camera_distance_m": self.camera.distance,
             "camera_lookat": self.camera.lookat.tolist(),
+            "ball_goal_marker": self.goal_marker,
             "fixed_views": {name: dict(preset) for name, preset in VIEW_PRESETS.items()
                             if name in self.views},
             "orbit_degrees_per_second": (
@@ -107,6 +149,7 @@ class RolloutVideo:
             self.camera.azimuth = (self.camera.azimuth
                                    + elapsed * ORBIT_DEGREES_PER_SECOND) % 360.0
         self.renderer.update_scene(self.env.data, camera=self.camera, scene_option=self.options)
+        add_ball_goal_marker(self.renderer.scene, self.goal_marker)
         for target, color in zip(self.targets, [(1, .1, .6, .8), (0, .9, 1, .8)]):
             scene = self.renderer.scene
             if scene.ngeom >= scene.maxgeom:
@@ -121,8 +164,10 @@ class RolloutVideo:
         draw.text((10, 7), f"{view.title()} view", fill=(170, 210, 255))
         draw.text((10, 24), self.label, fill="white")
         rise = self.env.data.body("ball").xpos[2] - self.env.initial_ball_height
-        draw.text((10, 41), f"simulation t={self.env.data.time:.2f}s | ball rise={rise:.3f}m",
-                  fill="white")
+        status = f"simulation t={self.env.data.time:.2f}s | ball rise={rise:.3f}m"
+        if self.goal_marker is not None:
+            status += f" | grey cube: goal z={self.goal_marker['center_world_m'][2]:.2f}m"
+        draw.text((10, 41), status, fill="white")
         return frame
 
     def capture(self, force=False):

@@ -49,8 +49,9 @@ fixture and released demonstration before inference. Every rollout writes:
 
 - `runtime/runs/<timestamp>/rollout.mp4`: synchronized 1280×960 video with
   overview, opposite, side, and top views at 25 simulation fps.
-  Pink/cyan spheres show left/right predicted **site** targets. Short pauses
-  display each new target and the final result.
+  Pink/cyan spheres show left/right predicted **site** targets. A translucent
+  light grey 20 cm cube marks the lift goal, centered at the initial ball XY
+  and world z=0.95 m. Short pauses display each new target and the final result.
 - `cameras_*.png`: front, left wrist, right wrist input images.
 - `observation_*.npz`: uint8 RGB, policy-frame point clouds, gripper states,
   simulation joint positions, velocities and actuator targets.
@@ -79,6 +80,11 @@ Available values are `all` (default), `overview`, `opposite`, `side`, `top`,
 and `orbit`. The four views in `all` render the same simulation state; they
 are not separate policy runs. Observer angles do not change policy camera
 inputs. `report.json` records the selected video view.
+
+The grey goal cube also appears in the live viewer. Its center indicates the
+height threshold; cube containment and X/Y position are not success conditions.
+It is an observer overlay, so it adds no collision object and is absent from
+policy RGB-D images. Each reset anchors it to that episode's initial ball XY.
 
 For a live viewer with an initial side view:
 
@@ -269,7 +275,8 @@ are in [`configs/peract2_scene.json`](configs/peract2_scene.json).
 The [original task code](https://github.com/markusgrotz/RLBench/blob/8af748c51287989294e00c9c670e3330a0e35ed5/rlbench/bimanual_tasks/bimanual_lift_ball.py)
 has **no fixed target X/Y/orientation and no hold-time requirement**.
 The demo's final ball pose is an achieved state, not a target constraint.
-The unrelated `target_0` marker from the MuJoCo branch is removed.
+The unrelated physical-scene `target_0` marker from the MuJoCo branch is removed.
+The observer-only grey cube instead marks the source height threshold.
 
 The checkpoint does not record the RLBench git revision used in training.
 The pinned upstream scene was checked against the released demo: its front

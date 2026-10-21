@@ -34,6 +34,11 @@ All rollouts save `rollout.mp4`, policy camera PNGs, observation NPZs and
 named directory. Four-view video depicts the actual physical MuJoCo robot;
 the camera PNGs show what the checkpoint sees.
 
+Videos and the live viewer show a translucent light grey 20 cm goal cube.
+Its center is at the initial ball X/Y and the source goal height, z=0.95 m.
+The task constrains height only; the cube is a visual reference, not a target
+volume. It is absent from policy cameras and has no physical collisions.
+
 The visual model uses source robot geometry to reproduce the checkpoint's
 observations. It is a separate model synchronized to the actual physical
 robot's TCPs and finger positions. This is not a claim that ordinary images
